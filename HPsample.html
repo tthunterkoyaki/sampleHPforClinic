@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ja" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>しらとり神経内科クリニック | 頭痛・めまい・しびれ・物忘れのご相談</title>
+    
+    <!-- Tailwind CSS を読み込み -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts (Noto Sans JP) を読み込み -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <script>
+        // Tailwind CSS の設定をカスタマイズ
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Noto Sans JP"', 'sans-serif'],
+                    },
+                    colors: {
+                        // 提供されたカラーテーマをTailwind用に設定
+                        'primary': {
+                            light: '#E0F7FA',
+                            DEFAULT: '#00838F',
+                            dark: '#005662',
+                        },
+                        'accent': {
+                            DEFAULT: '#FF8A65',
+                            dark: '#F4511E',
+                        },
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* スクロールアニメーション用のスタイル */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+        }
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+    <!-- ========== ヘッダー ========== -->
+    <header class="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-50">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex-shrink-0">
+                <a href="#" class="text-xl font-bold text-primary-dark">しらとり神経内科クリニック</a>
+                <p class="text-xs text-gray-500 hidden sm:block">地域の皆様の脳と神経の健康をサポート</p>
+            </div>
+            
+            <!-- PC用ナビゲーション -->
+            <nav class="hidden lg:flex items-center space-x-8">
+                <a href="#features" class="text-gray-600 hover:text-primary transition-colors">当院の特徴</a>
+                <a href="#services" class="text-gray-600 hover:text-primary transition-colors">診療案内</a>
+                <a href="#greeting" class="text-gray-600 hover:text-primary transition-colors">院長挨拶</a>
+                <a href="#access" class="text-gray-600 hover:text-primary transition-colors">アクセス</a>
+                <a href="#contact" class="bg-accent hover:bg-accent-dark text-white font-bold py-2 px-4 rounded-full transition-colors shadow-md">
+                    ご予約・お問い合わせ
+                </a>
+            </nav>
+
+            <!-- スマホ用ハンバーガーメニューボタン -->
+            <button id="menu-btn" class="lg:hidden focus:outline-none">
+                <svg class="w-6 h-6 text-primary-dark" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            </button>
+        </div>
+
+        <!-- スマホ用ナビゲーション (開閉) -->
+        <div id="mobile-menu" class="hidden lg:hidden bg-white border-t">
+            <a href="#features" class="block py-3 px-6 text-gray-700 hover:bg-primary-light">当院の特徴</a>
+            <a href="#services" class="block py-3 px-6 text-gray-700 hover:bg-primary-light">診療案内</a>
+            <a href="#greeting" class="block py-3 px-6 text-gray-700 hover:bg-primary-light">院長挨拶</a>
+            <a href="#access" class="block py-3 px-6 text-gray-700 hover:bg-primary-light">アクセス</a>
+            <a href="#contact" class="block py-3 px-6 bg-primary-light text-primary-dark font-semibold">ご予約・お問い合わせ</a>
+        </div>
+    </header>
+
+    <main>
+        <!-- ========== メインビジュアル ========== -->
+        <section class="bg-gradient-to-r from-primary-light to-cyan-100 pt-20 pb-24 text-center">
+            <div class="container mx-auto px-6">
+                <h1 class="text-3xl md:text-5xl font-bold text-primary-dark mb-4">
+                    あなたの「脳と神経」のかかりつけ医
+                </h1>
+                <p class="text-md md:text-lg text-primary-dark max-w-3xl mx-auto">
+                    頭痛、めまい、しびれ、物忘れなど、気になる症状はお気軽にご相談ください。<br>
+                    神経内科専門医が丁寧な診察とわかりやすい説明を心がけます。
+                </p>
+                <a href="#contact" class="mt-8 inline-block bg-accent hover:bg-accent-dark text-white font-bold py-3 px-8 rounded-full text-lg transition-transform hover:scale-105 shadow-lg">
+                    Webで予約する
+                </a>
+            </div>
+        </section>
+
+        <!-- ========== 当院の特徴 ========== -->
+        <section id="features" class="py-20 bg-white">
+            <div class="container mx-auto px-6">
+                <div class="text-center mb-16">
+                    <h2 class="text-3xl font-bold text-primary-dark relative inline-block pb-2">
+                        当院の特徴
+                        <span class="absolute bottom-0 left-1/2 -translate-x-1/2 w-20 h-1 bg-primary rounded-full"></span>
+                    </h2>
+                </div>
+                <div class="grid md:grid-cols-3 gap-10 text-center">
+                    <div class="fade-in">
+                        <div class="bg-primary text-white w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-4 shadow-lg">
+                            <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                        </div>
+                        <h3 class="text-xl font-bold text-primary-dark mb-2">神経内科専門医による診療</h3>
+                        <p class="text-gray-600">脳、脊髄、神経、筋肉の病気を専門的に診察・治療します。</p>
+                    </div>
+                    <div class="fade-in">
+                        <div class="bg-primary text-white w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-4 shadow-lg">
+                             <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+                        </div>
+                        <h3 class="text-xl font-bold text-primary-dark mb-2">丁寧で分かりやすい説明</h3>
+                        <p class="text-gray-600">患者様との対話を重視し、納得いただける医療を目指します。</p>
+                    </div>
+                    <div class="fade-in">
+                        <div class="bg-primary text-white w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-4 shadow-lg">
+                            <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        </div>
+                        <h3 class="text-xl font-bold text-primary-dark mb-2">アクセスしやすい立地</h3>
+                        <p class="text-gray-600">〇〇駅より徒歩5分。お仕事帰りにも通院しやすい環境です。</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 診療案内 ========== -->
+        <section id="services" class="py-20 bg-gray-50">
+            <div class="container mx-auto px-6">
+                <div class="text-center mb-16">
+                    <h2 class="text-3xl font-bold text-primary-dark relative inline-block pb-2">
+                        診療案内
+                        <span class="absolute bottom-0 left-1/2 -translate-x-1/2 w-20 h-1 bg-primary rounded-full"></span>
+                    </h2>
+                </div>
+                <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
+                    <!-- 診療項目カード -->
+                    <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all fade-in">
+                        <img src="https://placehold.co/100x100/E0F7FA/00838F?text=頭痛" alt="頭痛" class="w-20 h-20 rounded-full mx-auto mb-4">
+                        <h3 class="text-xl font-bold text-primary-dark mb-2 text-center">頭痛外来</h3>
+                        <p class="text-gray-600">片頭痛、緊張型頭痛など、慢性的な頭痛を診断・治療します。</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all fade-in">
+                        <img src="https://placehold.co/100x100/E0F7FA/00838F?text=めまい" alt="めまい・しびれ" class="w-20 h-20 rounded-full mx-auto mb-4">
+                        <h3 class="text-xl font-bold text-primary-dark mb-2 text-center">めまい・しびれ</h3>
+                        <p class="text-gray-600">脳や神経の病気のサインかもしれません。早期発見が重要です。</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all fade-in">
+                        <img src="https://placehold.co/100x100/E0F7FA/00838F?text=物忘れ" alt="もの忘れ外来" class="w-20 h-20 rounded-full mx-auto mb-4">
+                        <h3 class="text-xl font-bold text-primary-dark mb-2 text-center">もの忘れ外来</h3>
+                        <p class="text-gray-600">認知症の早期診断と治療、ご家族からのご相談も承ります。</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all fade-in">
+                        <img src="https://placehold.co/100x100/E0F7FA/00838F?text=脳卒中" alt="脳卒中予防" class="w-20 h-20 rounded-full mx-auto mb-4">
+                        <h3 class="text-xl font-bold text-primary-dark mb-2 text-center">脳卒中・生活習慣病</h3>
+                        <p class="text-gray-600">高血圧、糖尿病などを管理し、脳卒中の予防と再発防止に努めます。</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 院長挨拶 ========== -->
+        <section id="greeting" class="py-20 bg-white">
+            <div class="container mx-auto px-6">
+                <div class="text-center mb-16">
+                    <h2 class="text-3xl font-bold text-primary-dark relative inline-block pb-2">
+                        院長挨拶
+                        <span class="absolute bottom-0 left-1/2 -translate-x-1/2 w-20 h-1 bg-primary rounded-full"></span>
+                    </h2>
+                </div>
+                <div class="flex flex-col md:flex-row items-center gap-12 fade-in">
+                    <div class="flex-shrink-0">
+                        <!-- 実際の院長の写真に差し替えてください -->
+                        <img src="https://placehold.co/300x300/E0F7FA/00838F?text=院長写真" alt="院長 白鳥 太郎" class="w-48 h-48 md:w-64 md:h-64 rounded-full shadow-2xl object-cover">
+                    </div>
+                    <div class="text-left">
+                        <h3 class="text-2xl font-bold text-gray-800 mb-4">皆様の健康な生活を、脳と神経からサポートします</h3>
+                        <p class="mb-4">
+                            はじめまして。しらとり神経内科クリニック院長の白鳥 太郎（しらとり たろう）です。
+                            私はこれまで大学病院や地域の基幹病院で、神経内科専門医として多くの患者様の診療にあたってまいりました。神経内科の疾患は、早期発見・早期治療が非常に重要です。
+                        </p>
+                        <p class="mb-4">
+                            当院では、患者様のお話を丁寧にお伺いし、わかりやすい説明を心がけております。「こんなことで受診してもいいのかな」と思わず、些細なことでもお気軽にご相談ください。
+                        </p>
+                        <p class="text-right font-semibold text-gray-700">
+                            院長 白鳥 太郎<br>
+                            <span class="text-sm font-normal">（日本神経学会認定 神経内科専門医）</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== アクセス・診療時間 ========== -->
+        <section id="access" class="py-20 bg-gray-50">
+            <div class="container mx-auto px-6">
+                <div class="text-center mb-16">
+                    <h2 class="text-3xl font-bold text-primary-dark relative inline-block pb-2">
+                        アクセス・診療時間
+                        <span class="absolute bottom-0 left-1/2 -translate-x-1/2 w-20 h-1 bg-primary rounded-full"></span>
+                    </h2>
+                </div>
+                <div class="grid lg:grid-cols-2 gap-12">
+                    <!-- 診療時間 -->
+                    <div class="fade-in">
+                        <h3 class="text-2xl font-bold text-primary-dark mb-4">診療時間</h3>
+                        <div class="bg-white rounded-lg shadow-lg overflow-hidden">
+                            <table class="w-full text-center">
+                                <thead class="bg-primary-light text-primary-dark">
+                                    <tr>
+                                        <th class="p-3 font-semibold">時間</th>
+                                        <th class="p-3 font-semibold">月</th>
+                                        <th class="p-3 font-semibold">火</th>
+                                        <th class="p-3 font-semibold">水</th>
+                                        <th class="p-3 font-semibold">木</th>
+                                        <th class="p-3 font-semibold">金</th>
+                                        <th class="p-3 font-semibold">土</th>
+                                        <th class="p-3 font-semibold">日祝</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr class="border-t">
+                                        <td class="p-3 font-medium">9:00-12:00</td>
+                                        <td>●</td><td>●</td><td>●</td>
+                                        <td class="text-gray-400">／</td>
+                                        <td>●</td><td>●</td>
+                                        <td class="text-gray-400">／</td>
+                                    </tr>
+                                    <tr class="border-t bg-gray-50">
+                                        <td class="p-3 font-medium">15:00-18:00</td>
+                                        <td>●</td><td>●</td><td>●</td>
+                                        <td class="text-gray-400">／</td>
+                                        <td>●</td>
+                                        <td class="text-gray-400">／</td>
+                                        <td class="text-gray-400">／</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="text-right mt-2 text-sm text-gray-600">休診日：木曜、土曜午後、日曜、祝日</p>
+                    </div>
+
+                    <!-- アクセス -->
+                    <div class="fade-in">
+                        <h3 class="text-2xl font-bold text-primary-dark mb-4">アクセス</h3>
+                        <div class="bg-white rounded-lg shadow-lg p-6">
+                            <p class="mb-4">
+                                <strong>〒123-4567 東京都〇〇区〇〇 1-2-3</strong><br>
+                                〇〇線「〇〇駅」東口より徒歩5分<br>
+                                TEL: 03-1234-5678
+                            </p>
+                            <!-- ここにGoogle Mapの埋め込みコードを貼り付けます -->
+                            <div class="aspect-w-16 aspect-h-9 bg-gray-200 rounded-md flex items-center justify-center text-gray-500">
+                                Google Map
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== ご予約・お問い合わせ ========== -->
+        <section id="contact" class="py-20 bg-white">
+            <div class="container mx-auto px-6">
+                 <div class="text-center mb-10">
+                    <h2 class="text-3xl font-bold text-primary-dark relative inline-block pb-2">
+                        ご予約・お問い合わせ
+                        <span class="absolute bottom-0 left-1/2 -translate-x-1/2 w-20 h-1 bg-primary rounded-full"></span>
+                    </h2>
+                    <p class="mt-4 text-gray-600 max-w-2xl mx-auto">
+                        ご予約はお電話（03-1234-5678）または以下のフォームより承ります。<br>
+                        <span class="text-sm">（※注意：このフォームはサンプルであり、実際には送信されません。）</span>
+                    </p>
+                </div>
+                <form action="#" method="post" class="max-w-2xl mx-auto bg-gray-50 p-8 rounded-lg shadow-md fade-in">
+                    <div class="mb-6">
+                        <label for="name" class="block text-gray-700 font-bold mb-2">お名前</label>
+                        <input type="text" id="name" name="name" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                    </div>
+                    <div class="mb-6">
+                        <label for="email" class="block text-gray-700 font-bold mb-2">メールアドレス</label>
+                        <input type="email" id="email" name="email" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                    </div>
+                    <div class="mb-6">
+                        <label for="subject" class="block text-gray-700 font-bold mb-2">件名</label>
+                        <input type="text" id="subject" name="subject" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                    </div>
+                     <div class="mb-6">
+                        <label for="message" class="block text-gray-700 font-bold mb-2">お問い合わせ内容</label>
+                        <textarea id="message" name="message" rows="5" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"></textarea>
+                    </div>
+                    <button type="submit" class="w-full bg-primary hover:bg-primary-dark text-white font-bold py-3 px-6 rounded-md transition-colors text-lg">
+                        送信する
+                    </button>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <!-- ========== フッター ========== -->
+    <footer class="bg-primary-dark text-white text-center py-8">
+        <div class="container mx-auto px-6">
+            <p>&copy; 2025 しらとり神経内科クリニック. All Rights Reserved.</p>
+        </div>
+    </footer>
+
+    <script>
+        // --- スマートフォン用メニューの開閉機能 ---
+        const menuBtn = document.getElementById('menu-btn');
+        const mobileMenu = document.getElementById('mobile-menu');
+        
+        menuBtn.addEventListener('click', () => {
+            mobileMenu.classList.toggle('hidden');
+        });
+
+        // --- スクロールに応じたフェードインアニメーション ---
+        const faders = document.querySelectorAll('.fade-in');
+        
+        const appearOptions = {
+            threshold: 0.3, // 30%要素が見えたら発火
+            rootMargin: "0px 0px -50px 0px" // 少し早めに発火させる
+        };
+
+        const appearOnScroll = new IntersectionObserver(function(entries, appearOnScroll) {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) {
+                    return;
+                } else {
+                    entry.target.classList.add('visible');
+                    appearOnScroll.unobserve(entry.target);
+                }
+            });
+        }, appearOptions);
+
+        faders.forEach(fader => {
+            appearOnScroll.observe(fader);
+        });
+
+    </script>
+</body>
+</html>
