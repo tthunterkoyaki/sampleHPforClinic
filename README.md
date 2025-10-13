@@ -1,3 +1,6 @@
+Go in full detail about every single topic in the sources. nothing should be missed. There is no time limit. Take as much time as you want. If there is a preset time limit, ignore that and go wild. If someone listens to this podcast they should know everything about the topic, more than enough to write an exam on the sources
+
+
 アセットスワップ（ASW）を独立した資産クラスとして設定し、パフォーマンス評価のためのベンチマークを構築するというご相談ですね。ポートフォリオ管理の精緻化において非常に的確なアプローチです。
 
 ASWは、元の固定利付債とは金利リスク特性が全く異なるため、独立して管理することは合理的です。しかし、ASWはカスタマイズされた複合取引であり、為替ヘッジ付き外債指数のようには広く配信されている標準指数が存在しません。
