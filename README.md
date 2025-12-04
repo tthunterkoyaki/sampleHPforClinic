@@ -4,459 +4,901 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+import matplotlib.ticker as mticker
 
-# 日本語フォント設定（環境に合わせて変更してください。Windowsなら'Meiryo'など）
-plt.rcParams['font.family'] = 'sans-serif' 
-# plt.rcParams['font.family'] = 'Meiryo' # Windowsの場合の例
+# グラフの日本語表示設定（必要に応じてコメントアウトまたはフォント名を変更してください）
+# try:
+#     # 例: Windowsの場合 'MS Gothic' や 'Meiryo', Mac/Linuxの場合 'IPAexGothic' など
+#     plt.rcParams['font.family'] = 'MS Gothic' 
+# except:
+#     print("Info: 日本語フォントの設定はスキップされました。グラフが文字化けする可能性があります。")
 
-class DerivativeSimulator:
-    def __init__(self, df_contracts, history_rates, analysis_start, analysis_end):
-        """
-        df_contracts: 契約データ
-        history_rates: 通貨ごとの過去実績レート (DataFrame index=Date, columns=['USD', 'EUR', ...])
-        analysis_start: 分析開始日 (この日以降の収益を計算)
-        analysis_end: 分析終了日
-        """
-        self.df = df_contracts.copy()
-        self.history = history_rates
-        self.start_date = pd.to_datetime(analysis_start)
-        self.end_date = pd.to_datetime(analysis_end)
-        
-        # 設定パラメータ
-        self.roll_rate_ko = 0.7  # KO消滅時のロール率
-        self.roll_rate_maturity = 0.6  # 満期時のロール率
-        
-    def generate_scenarios_gbm(self, currency, num_scenarios, days, drift=0.0, vol=0.1):
-        """
-        幾何ブラウン運動によるモンテカルロシミュレーション
-        """
-        last_rate = self.history[currency].iloc[-1]
-        dt = 1/252
-        
-        # ランダムウォーク生成
-        shock = np.random.normal(0, 1, (days, num_scenarios))
-        prices = np.zeros((days + 1, num_scenarios))
-        prices[0] = last_rate
-        
-        for t in range(1, days + 1):
-            prices[t] = prices[t-1] * np.exp((drift - 0.5 * vol**2) * dt + vol * np.sqrt(dt) * shock[t-1])
-            
-        # 日付インデックスの作成
-        start_sim_date = self.history.index[-1] + timedelta(days=1)
-        date_index = pd.date_range(start=start_sim_date, periods=days+1, freq='B') # 営業日ベース
-        
-        return pd.DataFrame(prices, index=date_index)
+# 再現性確保のため乱数シードを固定
+np.random.seed(42)
 
-    def generate_scenarios_linear(self, currency, target_rate, days):
-        """
-        現在値から目標値へ線形に動く単純シナリオ（1シナリオのみ）
-        """
-        last_rate = self.history[currency].iloc[-1]
-        prices = np.linspace(last_rate, target_rate, days + 1)
-        
-        start_sim_date = self.history.index[-1] + timedelta(days=1)
-        date_index = pd.date_range(start=start_sim_date, periods=days+1, freq='B')
-        
-        return pd.DataFrame(prices, index=date_index, columns=[0])
+# --------------------------------------------------------------------------------
+# 1. ダミーデータの生成（または実データのロード）
+# --------------------------------------------------------------------------------
 
-    def _get_exchange_dates(self, row, end_date):
-        """
-        初回決済日から終了日までの交換日リストを生成
-        """
-        dates = []
-        current = pd.to_datetime(row['初回決済日'])
-        maturity = pd.to_datetime(row['終了日'])
-        
-        # 交換頻度（月数）
-        freq_months = int(12 / row['年間交換回数'])
-        
-        # 末日指定の処理
-        is_month_end = str(row['交換日']) == '末'
-        day_num = 31 if is_month_end else int(row['交換日'])
-        
-        while current <= maturity and current <= end_date:
-            dates.append(current)
-            # 次の予定日計算
-            next_month = current + relativedelta(months=freq_months)
-            if is_month_end:
-                dates.append(next_month + relativedelta(day=31)) # その月の末日に補正
-            else:
-                try:
-                    dates.append(next_month.replace(day=day_num))
-                except ValueError:
-                    # 2月30日などの場合、その月の末日にするなどの処理が必要だがここでは簡略化
-                    dates.append(next_month + relativedelta(day=31))
-            current = dates[-1]
-            
-        return sorted(list(set(dates))) # 重複排除してソート
+def generate_dummy_data(n_contracts=100):
+    """
+    ダミーの契約データと為替レート実績データを生成する。
+    【重要】実データを使用する場合は、ここでファイルをロードし、DataFrameを返してください。
+    カラム名は本コードで使用しているものと一致させてください。
+    """
 
-    def check_ko(self, row, rate_path):
-        """
-        単一契約・単一シナリオに対する消滅判定
-        戻り値: (is_ko, ko_date, ko_type)
-        """
-        # 通貨の判定
-        ccy = row['受取通貨'] if row['受取通貨'] != 'JPY' else row['支払通貨']
-        if ccy not in rate_path.columns:
-            return False, None, None # 対象通貨のシナリオがない（金利系など）
-            
-        # パス結合（実績 + シナリオ）
-        # ※本来はシナリオ開始日と契約期間のマージが必要ですが、ここでは簡略化して全期間参照可能とします
-        full_path = pd.concat([self.history[ccy], rate_path[ccy]]).sort_index()
-        full_path = full_path[~full_path.index.duplicated(keep='first')]
+    # 為替レート実績データ (historical_fx_df)
+    start_date = datetime(2023, 1, 1)
+    # 現在の日付（コンテキストに合わせて2025/12/3と仮定）
+    today = datetime(2025, 12, 3)
+    end_date = today
+    # 営業日ベースで生成
+    dates = pd.date_range(start=start_date, end=end_date, freq='B')
+    n_days = len(dates)
 
-        # 期間外のデータを除外（初回決済日以降、かつウィンドウ開始日以降）
-        start_check = pd.to_datetime(row['初回決済日'])
-        if pd.notnull(row['消滅判定開始日（ウィンドウ）']):
-            start_check = max(start_check, pd.to_datetime(row['消滅判定開始日（ウィンドウ）']))
-            
-        maturity = pd.to_datetime(row['終了日'])
-        
-        # 判定対象期間のデータ
-        target_path = full_path[(full_path.index >= start_check) & (full_path.index <= maturity)]
-        if target_path.empty:
-            return False, None, None
+    def generate_fx_series(start_price, volatility, n_days, seed):
+        rng = np.random.default_rng(seed=seed)
+        # 日次リターンを生成
+        returns = rng.normal(0, volatility / np.sqrt(252), n_days)
+        # 累積リターンから価格パスを生成
+        prices = start_price * np.exp(np.cumsum(returns))
+        return prices
 
-        # 輸入/輸出判定 (JPY受取=輸出=下回ったらKO / JPY以外受取=輸入=上回ったらKO)
-        is_export = (row['受取通貨'] == 'JPY')
-        
-        # --- ① 通常KO型 ---
-        if row['通常KO型'] == 1:
-            ko_rate = row['KO・KI相場(1行目)']
-            is_american = (row['KO・KI判定(1行目)'] == 'ｱﾒﾘｶﾝ')
-            
-            if is_american:
-                # 日次判定
-                if is_export: # 下回ったら消滅
-                    hit = target_path[target_path <= ko_rate]
-                else: # 上回ったら消滅
-                    hit = target_path[target_path >= ko_rate]
-                
-                if not hit.empty:
-                    return True, hit.index[0], 'Normal_American'
-            else:
-                # ヨーロピアン（交換日のみ判定）
-                ex_dates = self._get_exchange_dates(row, maturity)
-                # target_pathに含まれる交換日のみ抽出
-                valid_ex_dates = [d for d in ex_dates if d in target_path.index]
-                
-                for d in valid_ex_dates:
-                    rate = target_path.loc[d]
-                    is_hit = (rate <= ko_rate) if is_export else (rate >= ko_rate)
-                    if is_hit:
-                        return True, d, 'Normal_European'
+    historical_fx_df = pd.DataFrame({
+        'Date': dates,
+        'USDJPY': generate_fx_series(150, 0.10, n_days, seed=42),
+        'EURJPY': generate_fx_series(160, 0.08, n_days, seed=43),
+        'CNHJPY': generate_fx_series(20, 0.05, n_days, seed=44)
+    }).set_index('Date')
 
-        # --- ② & ③ ターゲットKO型 (累積ロジック) ---
-        elif row['ターゲットKO型'] == 1:
-            ex_dates = self._get_exchange_dates(row, maturity)
-            valid_ex_dates = [d for d in ex_dates if d in target_path.index]
-            
-            accumulated_val = 0
-            target_limit = row['ターゲット金額（円）'] if pd.notnull(row['ターゲット金額（円）']) else row['ターゲット回数（件数）']
-            mode = 'amount' if pd.notnull(row['ターゲット金額（円）']) else 'count'
-            
-            # レート切り替え設定
-            switch_count = row['支払件数(特殊形の抽出後)']
-            rate1 = row['決済相場1']
-            rate2 = row['決済相場2'] if pd.notnull(row['決済相場2']) else rate1
-            
-            for i, d in enumerate(valid_ex_dates):
-                current_rate = target_path.loc[d]
-                target_strike = rate1 if (i + 1) <= switch_count else rate2
-                
-                # 判定ロジック（輸入：Sim > Strike で蓄積 / 輸出：Sim < Strike で蓄積）
-                # ※プロンプトの「上回った」等を基準に実装
-                diff = 0
-                if not is_export: # 輸入
-                    if current_rate > target_strike:
-                        diff = (current_rate - target_strike) if mode == 'amount' else 1
-                else: # 輸出
-                    if current_rate < target_strike:
-                        diff = (target_strike - current_rate) if mode == 'amount' else 1 # 差分は絶対値的に扱うと仮定
-                
-                # 金額モードの場合、受取金額を掛ける
-                if mode == 'amount' and diff > 0:
-                    diff = diff * row['受取'] # ※受取カラムには1回あたりの外貨額が入っている前提
-                
-                accumulated_val += diff
-                
-                if accumulated_val >= target_limit:
-                    return True, d, f'Target_{mode}'
+    # 契約データ (contracts_df)
+    contracts = []
+    rng_c = np.random.default_rng(seed=42)
 
-        return False, None, None
+    for i in range(n_contracts):
+        # 基本情報
+        contract_date = start_date + timedelta(days=int(rng_c.integers(0, (today - start_date).days)))
+        duration_years = rng_c.integers(1, 6)
+        end_date_c = contract_date + relativedelta(years=duration_years)
+        first_settlement_date = contract_date + relativedelta(months=1)
 
-    def run_simulation(self, scenarios_dict):
-        """
-        全契約・全シナリオを実行
-        scenarios_dict: {'USD': df_scenarios, 'EUR': ...}
-        """
-        results = []
-        
-        # プログレスバーの代わりにプリント
-        print(f"Simulation Start: {len(self.df)} Contracts")
-        
-        for idx, row in self.df.iterrows():
-            # 通貨特定
-            ccy = row['受取通貨'] if row['受取通貨'] != 'JPY' else row['支払通貨']
-            
-            # 金利系など対象外通貨はスキップまたは固定扱い
-            if ccy not in scenarios_dict:
-                # KO判定なしとして処理
-                res = {
-                    'contract_id': idx,
-                    'revenue_base': row['収益'],
-                    'revenue_roll': 0,
-                    'is_ko': False,
-                    'ko_date': None,
-                    'scenario_id': 'Fixed'
-                }
-                # 満期ロール判定
-                if pd.to_datetime(row['終了日']) <= self.end_date:
-                     res['revenue_roll'] = row['収益'] * self.roll_rate_maturity
-                results.append(res)
-                continue
+        # 通貨ペアと方向性
+        if rng_c.random() > 0.5:
+            # 輸入型 (外貨受取)
+            receive_currency = rng_c.choice(['USD', 'EUR', 'CNH'])
+            pay_currency = 'JPY'
+            direction = 'Import'
+        else:
+            # 輸出型 (円受取)
+            receive_currency = 'JPY'
+            pay_currency = rng_c.choice(['USD', 'EUR', 'CNH'])
+            direction = 'Export'
 
-            scenarios = scenarios_dict[ccy]
-            num_scenarios = scenarios.shape[1]
-            
-            # 既に消滅している場合
-            if pd.notnull(row['消滅日']):
-                ko_date = pd.to_datetime(row['消滅日'])
-                roll_rev = 0
-                # 分析期間内に消滅したならロール計上
-                if self.start_date <= ko_date <= self.end_date:
-                    roll_rev = row['収益'] * self.roll_rate_ko
-                
-                # シナリオ数分だけレコード複製（重み付けのため）
-                for s in range(num_scenarios):
-                    results.append({
-                        'contract_id': idx,
-                        'revenue_base': row['収益'], # 確定収益は常に計上（分析期間ロジックによるが、ここでは契約済み総収益として扱う）
-                        'revenue_roll': roll_rev,
-                        'is_ko': True,
-                        'ko_date': ko_date,
-                        'scenario_id': s,
-                        'status': 'Already_Terminated'
-                    })
-                continue
+        # デリバティブの種類
+        derivative_type = rng_c.choice(['NonKO', 'NormalKO', 'TargetKO_Amount', 'TargetKO_Count'], p=[0.4, 0.3, 0.2, 0.1])
 
-            # シミュレーション実行
-            for s_col in scenarios.columns:
-                path = scenarios[[s_col]].rename(columns={s_col: ccy})
-                is_ko, ko_date, ko_type = self.check_ko(row, path)
-                
-                rev_roll = 0
-                status = 'Active'
-                
-                if is_ko:
-                    if self.start_date <= ko_date <= self.end_date:
-                        rev_roll = row['収益'] * self.roll_rate_ko
-                    status = f'Simulated_KO ({ko_type})'
-                else:
-                    # 満期判定
-                    maturity = pd.to_datetime(row['終了日'])
-                    if self.start_date <= maturity <= self.end_date:
-                        rev_roll = row['収益'] * self.roll_rate_maturity
-                        status = 'Maturity'
-                
-                results.append({
-                    'contract_id': idx,
-                    'revenue_base': row['収益'],
-                    'revenue_roll': rev_roll,
-                    'is_ko': is_ko,
-                    'ko_date': ko_date,
-                    'scenario_id': s_col,
-                    'status': status
-                })
-                
-        return pd.DataFrame(results)
-
-# --- 以下、実行用ダミーデータ生成とメイン処理 ---
-
-def create_dummy_data(n=50):
-    """分析に必要なカラムを持つダミーデータを作成"""
-    data = []
-    currencies = ['USD', 'EUR', 'CNH']
-    types = ['Normal', 'Target_Amt', 'Target_Cnt']
-    
-    base_date = datetime(2020, 1, 1)
-    
-    for i in range(n):
-        contract_date = base_date + timedelta(days=np.random.randint(0, 1000))
-        maturity_years = np.random.choice([1, 2, 3, 5, 10])
-        end_date = contract_date + relativedelta(years=maturity_years)
-        
-        ccy = np.random.choice(currencies)
-        is_export = np.random.choice([True, False]) # True: JPY受取
-        
-        # 収益 (100万〜1000万)
-        revenue = np.random.randint(100, 1000) * 10000
-        
-        row = {
+        contract = {
+            '契約ID': f'C{i+1:04d}',
             '契約日': contract_date,
-            '終了日': end_date,
-            '初回決済日': contract_date + relativedelta(months=1),
-            '収益': revenue,
-            '受取通貨': 'JPY' if is_export else ccy,
-            '支払通貨': ccy if is_export else 'JPY',
-            '年間交換回数': 12,
-            '交換日': '末',
-            '消滅日': pd.NaT, # 最初は生きている前提
-            '消滅判定開始日（ウィンドウ）': pd.NaT,
-            
-            # フラグ初期化
-            '通常KO型': 0,
-            'KO・KI相場(1行目)': np.nan, 'KO・KI判定(1行目)': np.nan,
-            'ターゲットKO型': 0, 'ターゲット金額（円）': np.nan, 'ターゲット回数（件数）': np.nan,
-            '決済相場1': np.nan, '決済相場2': np.nan, '支払件数(特殊形の抽出後)': 0,
-            '受取': 10000 # 1回あたりの外貨額（ダミー）
+            '終了日': end_date_c,
+            '初回決済日': first_settlement_date,
+            '消滅日': np.nan,
+            '収益': rng_c.integers(100, 1000) * 10000,
+            '受取通貨': receive_currency,
+            '支払通貨': pay_currency,
+            '通常KO型': 1 if derivative_type == 'NormalKO' else 0,
+            'ターゲットKO型': 1 if 'TargetKO' in derivative_type else 0,
+            'KO・KI相場(1行目)': np.nan,
+            'KO・KI判定(1行目)': np.nan,
+            '年間交換回数': rng_c.choice([1, 2, 4, 12]),
+            '交換日': rng_c.choice([15, 25, '末']),
+            '消滅判定開始日（ウィンドウ）': np.nan,
+            'ターゲット金額（円）': np.nan,
+            'ターゲット回数（件数）': np.nan,
+            '決済相場1': np.nan,
+            '決済相場2': np.nan,
+            '受取': rng_c.integers(1, 100) * 10000,
+            '支払件数(特殊形の抽出後)': np.nan,
+            '_Type': derivative_type # 分析用補助カラム
         }
+
+        # 種類に応じたパラメータ設定
+        base_rate = 150 if 'USD' in [receive_currency, pay_currency] else (160 if 'EUR' in [receive_currency, pay_currency] else 20)
+
+        if derivative_type == 'NormalKO':
+            if direction == 'Import':
+                contract['KO・KI相場(1行目)'] = base_rate * (1 + rng_c.uniform(0.05, 0.20))
+            else:
+                contract['KO・KI相場(1行目)'] = base_rate * (1 - rng_c.uniform(0.05, 0.20))
+            contract['KO・KI判定(1行目)'] = rng_c.choice(['ｱﾒﾘｶﾝ', 'ﾖｰﾛﾋﾟｱﾝ'])
+
+        elif 'TargetKO' in derivative_type:
+            # ターゲットKOは「ターゲットレートをシミュレーションレートが上回った」場合に蓄積
+            contract['決済相場1'] = base_rate * rng_c.uniform(0.90, 1.10)
+            # 2段階設定
+            if rng_c.random() > 0.7:
+                contract['決済相場2'] = base_rate * rng_c.uniform(0.90, 1.10)
+                contract['支払件数(特殊形の抽出後)'] = rng_c.integers(3, 12)
+
+            if derivative_type == 'TargetKO_Amount':
+                contract['ターゲット金額（円）'] = contract['受取'] * rng_c.uniform(5, 25)
+            elif derivative_type == 'TargetKO_Count':
+                contract['ターゲット回数（件数）'] = rng_c.integers(5, 20)
+
+        # ウィンドウ設定 (10%の確率で設定)
+        if rng_c.random() < 0.1:
+            window_start = first_settlement_date + relativedelta(months=int(rng_c.integers(1, 12)))
+            if window_start < end_date_c:
+                 contract['消滅判定開始日（ウィンドウ）'] = window_start
+
+        # 過去の消滅確定 (10%の確率で設定)
+        if rng_c.random() < 0.1 and contract['契約日'] < (today - relativedelta(months=3)):
+             # 初回決済日から今日までの期間でランダムに消滅日を設定
+             if first_settlement_date < today:
+                 possible_ko_days = (min(end_date_c, today) - first_settlement_date).days
+                 if possible_ko_days > 0:
+                    ko_date = first_settlement_date + timedelta(days=int(rng_c.integers(0, possible_ko_days)))
+                    contract['消滅日'] = ko_date
+
+        contracts.append(contract)
+
+    contracts_df = pd.DataFrame(contracts)
+    # 日付型の変換
+    date_cols = ['契約日', '終了日', '初回決済日', '消滅日', '消滅判定開始日（ウィンドウ）']
+    for col in date_cols:
+        contracts_df[col] = pd.to_datetime(contracts_df[col])
+
+    return contracts_df, historical_fx_df
+
+# --------------------------------------------------------------------------------
+# 2. 為替レートシミュレーション
+# --------------------------------------------------------------------------------
+
+class FXSimulator:
+    """為替レートのシミュレーションを行うクラス"""
+    def __init__(self, historical_fx_df, simulation_start_date, simulation_end_date, method='GBM', target_rates=None):
+        self.historical_fx_df = historical_fx_df
+        self.simulation_start_date = pd.to_datetime(simulation_start_date)
+        self.simulation_end_date = pd.to_datetime(simulation_end_date)
+        self.method = method
+        self.target_rates = target_rates
+        self.currencies = [col for col in historical_fx_df.columns if 'JPY' in col]
+        self.params = self._estimate_parameters()
+
+    def _estimate_parameters(self):
+        """過去データからドリフト(mu)とボラティリティ(sigma)を推定する (GBM用)"""
+        params = {}
+        for currency in self.currencies:
+            if currency in self.historical_fx_df.columns:
+                # 対数リターンを計算
+                log_returns = np.log(self.historical_fx_df[currency] / self.historical_fx_df[currency].shift(1)).dropna()
+                # 年率換算 (営業日数を252日と仮定)
+                mu = log_returns.mean() * 252
+                sigma = log_returns.std() * np.sqrt(252)
+                params[currency] = {'mu': mu, 'sigma': sigma}
+        return params
+
+    def simulate(self, n_simulations, seed=42):
+        """シミュレーションを実行し、結合されたレートデータ（実績+将来）を返す"""
+        simulation_dates = pd.date_range(start=self.simulation_start_date, end=self.simulation_end_date, freq='B')
+        n_days = len(simulation_dates)
         
-        # タイプ別条件設定
-        k_type = np.random.choice(types)
-        current_spot = 110 if ccy=='USD' else 130 if ccy=='EUR' else 15
+        # シミュレーション結果を格納するリスト。各要素が1つのシナリオ（実績+将来の完全なDataFrame）
+        all_simulations = []
         
-        if k_type == 'Normal':
-            row['通常KO型'] = 1
-            row['KO・KI判定(1行目)'] = np.random.choice(['ｱﾒﾘｶﾝ', 'ﾖｰﾛﾋﾟｱﾝ'])
-            # 輸入なら上、輸出なら下にKOを設定
-            barrier = current_spot * 1.1 if not is_export else current_spot * 0.9
-            row['KO・KI相場(1行目)'] = barrier
-            
-        elif k_type == 'Target_Amt':
-            row['ターゲットKO型'] = 1
-            row['ターゲット金額（円）'] = revenue * 0.5 # ターゲット金額
-            row['決済相場1'] = current_spot
-            if np.random.random() > 0.5: # 変動ストライクあり
-                row['決済相場2'] = current_spot * 1.05
-                row['支払件数(特殊形の抽出後)'] = 12
+        # 乱数生成器の初期化
+        rng = np.random.default_rng(seed=seed)
+
+        # シミュレーション開始直前の最終価格を取得
+        last_prices = {}
+        # simulation_start_dateの前日までの最新レートを取得
+        last_historical_date = self.simulation_start_date - timedelta(days=1)
+        for currency in self.currencies:
+             if currency in self.historical_fx_df.columns:
+                # asofを使用して直近の過去の営業日のレートを取得
+                last_prices[currency] = self.historical_fx_df[currency].asof(last_historical_date)
+
+        for i in range(n_simulations):
+            simulated_data = {}
+            for currency in self.currencies:
+                if currency not in last_prices or pd.isna(last_prices[currency]):
+                    continue
+
+                last_price = last_prices[currency]
+
+                if self.method == 'GBM':
+                    mu = self.params[currency]['mu']
+                    sigma = self.params[currency]['sigma']
+                    dt = 1/252
+                    # GBMのドリフト項 (μ - 0.5*σ^2)dt
+                    drift = (mu - 0.5 * sigma**2) * dt
+                    
+                    # 乱数生成
+                    random_shocks = rng.normal(0, 1, n_days)
+                    # 拡散項 σ * sqrt(dt) * Z
+                    diffusion = sigma * np.sqrt(dt) * random_shocks
+                    
+                    log_returns = drift + diffusion
+                    # 価格パスの計算 S_t = S_0 * exp(cumsum(log_returns))
+                    prices = last_price * np.exp(np.cumsum(log_returns))
+
+                elif self.method == 'Linear':
+                    # 線形モデル (Linearモデルの場合、n_simulationsは通常1)
+                    if self.target_rates and currency in self.target_rates:
+                        target_price = self.target_rates[currency]
+                    else:
+                        # ターゲット指定がない場合は最終価格維持
+                        target_price = last_price
+                    # 開始価格から目標価格まで線形補間
+                    prices = np.linspace(last_price, target_price, n_days+1)[1:]
+
+                else:
+                    raise ValueError(f"Unsupported simulation method: {self.method}")
+
+                simulated_data[currency] = prices
+
+            simulated_df = pd.DataFrame(simulated_data, index=simulation_dates)
+
+            # 実績データとシミュレーションデータを結合
+            combined_df = pd.concat([self.historical_fx_df, simulated_df]).sort_index()
+            # 欠損値を前方補完（土日祝日などでレートがない場合の対処）。重要。
+            combined_df = combined_df.ffill()
+            all_simulations.append(combined_df)
+
+        return all_simulations
+
+# --------------------------------------------------------------------------------
+# 3. ユーティリティ関数
+# --------------------------------------------------------------------------------
+
+def get_exchange_dates(start_date, end_date, annual_frequency, exchange_day):
+    """
+    交換日のリストを計算する。
+    [初回決済日](start_date)を起点とし、[年間交換回数]と[交換日]に基づき日付リストを生成する。
+    """
+    if annual_frequency <= 0 or pd.isna(annual_frequency) or pd.isna(start_date) or pd.isna(end_date) or pd.isna(exchange_day):
+        return []
+
+    interval_months = 12 // annual_frequency
+    start_date = pd.to_datetime(start_date)
+    end_date = pd.to_datetime(end_date)
+
+    dates = []
+    # イテレーションの開始点は初回決済日の月の初日とする
+    current_date = start_date.replace(day=1)
+
+    while current_date <= end_date:
+        if exchange_day == '末':
+            # relativedelta(day=31) は自動的にその月の最終日になる
+            target_date = current_date + relativedelta(day=31)
+        else:
+            try:
+                day = int(exchange_day)
+                # relativedelta(day=day) は指定日がその月に存在しない場合、月末に調整される
+                target_date = current_date + relativedelta(day=day)
+            except (ValueError, TypeError):
+                # 数値変換できない場合はスキップ
+                current_date += relativedelta(months=interval_months)
+                continue
+
+        # 計算された交換日が初回決済日以降かつ終了日以前であれば追加
+        if target_date >= start_date and target_date <= end_date:
+            dates.append(target_date)
+
+        # 次の交換月へ移動
+        current_date += relativedelta(months=interval_months)
+
+    return sorted(list(set(dates)))
+
+
+def get_fx_rate(fx_df, date, currency_pair):
+    """指定された日付の為替レートを取得する（直近の過去のレートを取得）"""
+    if currency_pair not in fx_df.columns:
+        return np.nan
+    try:
+        # asofは指定された日付またはそれ以前の最新のレートを返す (ffillされたデータに対して有効)
+        return fx_df[currency_pair].asof(date)
+    except KeyError:
+        # 日付がインデックスの範囲外の場合
+        return np.nan
+
+# --------------------------------------------------------------------------------
+# 4. 消滅判定ロジック
+# --------------------------------------------------------------------------------
+
+class KnockOutEvaluator:
+    """各契約の消滅判定を行うクラス"""
+    def __init__(self, contract, fx_scenario_df):
+        self.contract = contract
+        self.fx_df = fx_scenario_df
+        self.receive_currency = contract['受取通貨']
+        self.pay_currency = contract['支払通貨']
+        # 輸入型（[受取通貨]がJPY以外）
+        self.is_import = self.receive_currency != 'JPY'
+        self.currency_pair = self._get_currency_pair()
+        self.ko_date = None
+
+    def _get_currency_pair(self):
+        if 'USD' in [self.receive_currency, self.pay_currency]:
+            return 'USDJPY'
+        elif 'EUR' in [self.receive_currency, self.pay_currency]:
+            return 'EURJPY'
+        elif 'CNH' in [self.receive_currency, self.pay_currency]:
+            return 'CNHJPY'
+        return None
+
+    def evaluate(self):
+        """消滅判定を実行する"""
+        # すでに消滅が確定している場合は判定しない
+        if pd.notna(self.contract['消滅日']):
+            return self.contract['消滅日']
+
+        if self.currency_pair is None or self.currency_pair not in self.fx_df.columns:
+             return None
+
+        # 判定開始日の決定
+        first_settlement_date = self.contract['初回決済日']
+        window_start_date = self.contract['消滅判定開始日（ウィンドウ）']
+        end_date = self.contract['終了日']
+
+        if pd.isna(first_settlement_date) or pd.isna(end_date):
+            return None
+
+        # 要件：[初回決済日]以降から開始。ただし、[消滅判定開始日（ウィンドウ）]がある場合は、このカラムの日付から開始。
+        # 安全のため、初回決済日とウィンドウ開始日の遅い方を採用する。
+        if pd.notna(window_start_date):
+            start_date_for_judgement = max(first_settlement_date, window_start_date)
+        else:
+            start_date_for_judgement = first_settlement_date
+        
+        if start_date_for_judgement > end_date:
+            return None
+
+        # 契約種別に応じた判定ロジックの呼び出し
+        if self.contract['通常KO型'] == 1:
+            self._evaluate_normal_ko(start_date_for_judgement, end_date, first_settlement_date)
+        elif self.contract['ターゲットKO型'] == 1:
+            self._evaluate_target_ko(start_date_for_judgement, end_date, first_settlement_date)
+
+        return self.ko_date
+
+    def _check_ko_condition(self, rate, ko_rate):
+        """通常KO型のノックアウト条件を判定する"""
+        if self.is_import:
+            # 輸入型：ノックアウトレートよりも想定レートが上回ったら消滅
+            return rate >= ko_rate
+        else:
+            # 輸出型：下回ったら消滅
+            return rate <= ko_rate
+
+    def _evaluate_normal_ko(self, start_date, end_date, first_settlement_date):
+        """①通常KO型の判定"""
+        ko_rate = self.contract['KO・KI相場(1行目)']
+        if pd.isna(ko_rate):
+            return
+
+        judgement_type = self.contract['KO・KI判定(1行目)']
+
+        if judgement_type == 'ｱﾒﾘｶﾝ':
+            # アメリカンタイプ：日次で判定
+            # 判定期間のレートを取得 (start_date以降)
+            # locでスライスする際は、インデックスがソートされている必要がある
+            if not self.fx_df.index.is_monotonic_increasing:
+                self.fx_df = self.fx_df.sort_index()
                 
-        elif k_type == 'Target_Cnt':
-            row['ターゲットKO型'] = 1
-            row['ターゲット回数（件数）'] = 12 # 12回ヒットで終了
-            row['決済相場1'] = current_spot
+            relevant_rates = self.fx_df[self.currency_pair].loc[start_date:end_date]
+            
+            if relevant_rates.empty:
+                return
+
+            ko_mask = self._check_ko_condition(relevant_rates, ko_rate)
+            if ko_mask.any():
+                # 最初に条件を満たした日を消滅日とする
+                self.ko_date = ko_mask[ko_mask].index[0]
+
+        elif judgement_type == 'ﾖｰﾛﾋﾟｱﾝ':
+            # ヨーロピアンタイプ：交換日のみで判定
+            # 交換日の計算基準は[初回決済日]
+            exchange_dates = get_exchange_dates(
+                first_settlement_date,
+                end_date,
+                self.contract['年間交換回数'],
+                self.contract['交換日']
+            )
+            # 判定開始日(start_date)以降の交換日のみ対象
+            exchange_dates = [d for d in exchange_dates if d >= start_date]
+
+            for date in exchange_dates:
+                rate = get_fx_rate(self.fx_df, date, self.currency_pair)
+                if pd.notna(rate) and self._check_ko_condition(rate, ko_rate):
+                    self.ko_date = date
+                    break
+
+    def _evaluate_target_ko(self, start_date, end_date, first_settlement_date):
+        """②ターゲットKO型（金額）および ③ターゲットKO型（件数）の判定"""
+        is_amount_target = pd.notna(self.contract['ターゲット金額（円）'])
+        is_count_target = pd.notna(self.contract['ターゲット回数（件数）'])
+
+        if not is_amount_target and not is_count_target:
+            return
+
+        target_rate1 = self.contract['決済相場1']
+        target_rate2 = self.contract['決済相場2']
+        switch_count = self.contract['支払件数(特殊形の抽出後)']
+        amount_per_exchange = self.contract['受取']
+
+        # 交換日の計算（初回決済日から計算）
+        exchange_dates = get_exchange_dates(
+            first_settlement_date,
+            end_date,
+            self.contract['年間交換回数'],
+            self.contract['交換日']
+        )
+
+        exchange_count = 0
+        accumulated_value = 0
+
+        # 実績期間を含む全交換日をループし、蓄積値と交換回数を計算する
+        for date in exchange_dates:
+            exchange_count += 1
+
+            # 判定開始日より前はスキップ（ただし交換回数はカウントする）
+            if date < start_date:
+                continue
+
+            # ターゲットレートの決定（2段階切り替えロジック）
+            current_target_rate = target_rate1
+            if pd.notna(target_rate2) and pd.notna(switch_count) and exchange_count > switch_count:
+                current_target_rate = target_rate2
+
+            if pd.isna(current_target_rate):
+                 continue
+
+            # 為替レートの取得（実績またはシミュレーション）
+            rate = get_fx_rate(self.fx_df, date, self.currency_pair)
+            if pd.isna(rate):
+                continue
+
+            # 蓄積ロジック
+            # 要件定義：「ターゲットレートをシミュレーションレートが上回った」場合に蓄積
+            if rate > current_target_rate:
+                if is_amount_target:
+                    # ②金額ターゲット
+                    profit = (rate - current_target_rate) * amount_per_exchange
+                    accumulated_value += profit
+                elif is_count_target:
+                    # ③回数ターゲット
+                    accumulated_value += 1
+            # 下回る場合はマイナス値の加算などはしない（スキップまたはゼロを足す操作を行う）
+
+            # 消滅判定
+            target_threshold = self.contract['ターゲット金額（円）'] if is_amount_target else self.contract['ターゲット回数（件数）']
+            
+            if pd.notna(target_threshold) and accumulated_value >= target_threshold:
+                self.ko_date = date
+                break
+
+# --------------------------------------------------------------------------------
+# 5. シミュレーション実行と収益計算
+# --------------------------------------------------------------------------------
+
+class ProfitSimulator:
+    """全体のシミュレーションと収益計算を統括するクラス"""
+    def __init__(self, contracts_df, historical_fx_df, analysis_start_date, analysis_end_date,
+                 roll_rate_non_ko=0.6, roll_rate_ko=0.7, simulation_method='GBM', target_rates=None, n_simulations=100):
+        self.contracts_df = contracts_df.copy()
+        self.historical_fx_df = historical_fx_df
+        self.analysis_start_date = pd.to_datetime(analysis_start_date)
+        self.analysis_end_date = pd.to_datetime(analysis_end_date)
+        self.roll_rate_non_ko = roll_rate_non_ko
+        self.roll_rate_ko = roll_rate_ko
+        self.simulation_method = simulation_method
         
-        # 一部を既に消滅させる
-        if np.random.random() < 0.2:
-            term_date = contract_date + timedelta(days=np.random.randint(10, 300))
-            if term_date < datetime.now():
-                row['消滅日'] = term_date
+        # Linearモデルの場合はシミュレーション回数を1に強制
+        if self.simulation_method == 'Linear':
+            self.n_simulations = 1
+        else:
+            self.n_simulations = n_simulations
 
-        data.append(row)
+        # シミュレーション期間の設定
+        # 実績データの最終日の翌日からシミュレーション開始
+        self.simulation_start_date = historical_fx_df.index.max() + timedelta(days=1)
+
+        if self.simulation_start_date > self.analysis_end_date:
+             self.simulation_end_date = self.simulation_start_date
+             print("Info: 分析期間がすべて過去のため、為替シミュレーションは実行されません。")
+        else:
+             # シミュレーション期間は分析終了日までとする
+             self.simulation_end_date = self.analysis_end_date
+
+        self.fx_simulator = FXSimulator(
+            historical_fx_df,
+            self.simulation_start_date,
+            self.simulation_end_date,
+            method=simulation_method,
+            target_rates=target_rates
+        )
+        self.simulation_results = []
+        self.ko_probabilities = None
+        self.fx_scenarios = []
+
+    def run_simulation(self, seed=42):
+        """モンテカルロシミュレーションを実行する"""
+        print(f"Starting simulation: Method={self.simulation_method}, Scenarios={self.n_simulations}")
         
-    return pd.DataFrame(data)
+        # 為替シナリオの生成
+        # シミュレーション期間がある場合のみ実行
+        if self.simulation_start_date <= self.simulation_end_date:
+             self.fx_scenarios = self.fx_simulator.simulate(self.n_simulations, seed=seed)
+        else:
+             # シミュレーション不要の場合は、実績データのみを使用 (ffillで休日補完)
+             self.fx_scenarios = [self.historical_fx_df.ffill()] * self.n_simulations
 
-def create_dummy_history():
-    """過去レートのダミー"""
-    dates = pd.date_range(start='2020-01-01', end=datetime.now(), freq='B')
-    df = pd.DataFrame(index=dates)
-    # USD: 100 -> 150
-    df['USD'] = np.linspace(100, 150, len(dates)) + np.random.normal(0, 1, len(dates))
-    # EUR: 120 -> 160
-    df['EUR'] = np.linspace(120, 160, len(dates)) + np.random.normal(0, 1, len(dates))
-    # CNH: 15 -> 20
-    df['CNH'] = np.linspace(15, 20, len(dates)) + np.random.normal(0, 0.1, len(dates))
-    return df
+        print(f"FX simulation finished. Starting profit calculation...")
 
-# ==========================================
-# メイン実行部
-# ==========================================
+        # 各シナリオでの収益計算
+        for i, fx_scenario_df in enumerate(self.fx_scenarios):
+            # 進捗表示
+            if self.n_simulations > 1 and ((i+1) % 100 == 0 or (i+1) == self.n_simulations):
+                print(f"Processing scenario {i+1}/{self.n_simulations}")
+                
+            scenario_result = self._calculate_scenario_profit(fx_scenario_df)
+            self.simulation_results.append(scenario_result)
 
-# 1. データの準備
-df_contracts = create_dummy_data(n=100) # 100件のダミー契約
-history_rates = create_dummy_history()
+        print("Profit calculation finished.")
+        self._calculate_ko_probabilities()
+        return self.get_summary()
 
-# 分析期間設定（例：今年度と来年度）
-today = datetime.now()
-analysis_start = datetime(today.year, 4, 1) # 今年度4/1
-analysis_end = datetime(today.year + 2, 3, 31) # 来年度末
+    def _calculate_scenario_profit(self, fx_scenario_df):
+        """1つのシナリオにおける収益を計算する"""
+        total_profit = 0
+        details = []
 
-print(f"分析期間: {analysis_start.strftime('%Y/%m/%d')} - {analysis_end.strftime('%Y/%m/%d')}")
+        for index, contract in self.contracts_df.iterrows():
+            contract_id = contract['契約ID']
+            original_profit = contract['収益']
+            
+            if pd.isna(original_profit):
+                continue
 
-# 2. シミュレーター初期化
-sim = DerivativeSimulator(df_contracts, history_rates, analysis_start, analysis_end)
+            # 1. 期間中の契約収益（新規契約分）
+            # 要件：「対象分析開始時点を外部設定で与え、まずこの期間に契約した収益を累積します。」
+            if self.analysis_start_date <= contract['契約日'] <= self.analysis_end_date:
+                total_profit += original_profit
+                details.append({'契約ID': contract_id, 'Type': 'New Contract', 'Profit': original_profit, 'Date': contract['契約日']})
 
-# 3. シナリオ生成 (モンテカルロ 100パス + 線形 1パス)
-# 実際には通貨間の相関などを考慮する場合もありますが、今回は独立して生成
-scenarios_dict = {}
-sim_days = (analysis_end - today).days + 30 # 少し余裕を持たせる
+            # 2. ロール収益の計算
 
-for ccy in ['USD', 'EUR', 'CNH']:
-    # モンテカルロ
-    df_gbm = sim.generate_scenarios_gbm(ccy, num_scenarios=50, days=sim_days, drift=0.0, vol=0.15)
-    df_gbm.columns = [f'Scen_{i}' for i in range(50)]
+            # 2.1 消滅確定済みの契約
+            # 要件：「期間中に消滅確定済みのものは、消滅日にロール率分だけロールした前提で収益を計上します。」
+            if pd.notna(contract['消滅日']):
+                if self.analysis_start_date <= contract['消滅日'] <= self.analysis_end_date:
+                    # 消滅したものはKO扱いのロール率(0.7)を使用
+                    roll_profit = original_profit * self.roll_rate_ko
+                    total_profit += roll_profit
+                    details.append({'契約ID': contract_id, 'Type': 'Roll (Historical KO)', 'Profit': roll_profit, 'Date': contract['消滅日']})
+                continue
+
+            # 2.2 消滅条件なしの契約
+            is_non_ko = (contract['通常KO型'] == 0) and (contract['ターゲットKO型'] == 0)
+            if is_non_ko:
+                # 要件：「満期が訪れるか否かのみを判定し、訪れる場合のみロール収益を計上します。」(ロール率0.6)
+                if self.analysis_start_date <= contract['終了日'] <= self.analysis_end_date:
+                    roll_profit = original_profit * self.roll_rate_non_ko
+                    total_profit += roll_profit
+                    details.append({'契約ID': contract_id, 'Type': 'Roll (Maturity)', 'Profit': roll_profit, 'Date': contract['終了日']})
+                continue
+
+            # 2.3 消滅条件ありの契約（シミュレーション）
+            evaluator = KnockOutEvaluator(contract, fx_scenario_df)
+            ko_date_simulated = evaluator.evaluate()
+
+            if ko_date_simulated:
+                # シミュレーションで消滅した場合
+                # 要件：「消滅するものについては、ロール率0.7（可変設定2）をかけて収益を求めに行く」
+                if self.analysis_start_date <= ko_date_simulated <= self.analysis_end_date:
+                    roll_profit = original_profit * self.roll_rate_ko
+                    total_profit += roll_profit
+                    details.append({'契約ID': contract_id, 'Type': 'Roll (Simulated KO)', 'Profit': roll_profit, 'Date': ko_date_simulated})
+            else:
+                # シミュレーションで消滅しなかった場合（満期まで残存）
+                # 満期が分析期間内に到来する場合のロール収益を計上（NonKOと同じ扱い0.6とするのが自然）
+                 if self.analysis_start_date <= contract['終了日'] <= self.analysis_end_date:
+                    roll_profit = original_profit * self.roll_rate_non_ko
+                    total_profit += roll_profit
+                    details.append({'契約ID': contract_id, 'Type': 'Roll (Simulated Maturity)', 'Profit': roll_profit, 'Date': contract['終了日']})
+
+        return {
+            'TotalProfit': total_profit,
+            'Details': pd.DataFrame(details)
+        }
+
+    def _calculate_ko_probabilities(self):
+        """各契約の消滅確率を計算する（消滅シナリオ数 ÷ シミュレーション全体）"""
+        ko_counts = {}
+        # シミュレーション対象となった契約（未消滅かつKO条件あり）を抽出
+        target_contracts = self.contracts_df[
+            (self.contracts_df['消滅日'].isna()) &
+            ((self.contracts_df['通常KO型'] == 1) | (self.contracts_df['ターゲットKO型'] == 1))
+        ]['契約ID']
+
+        for contract_id in target_contracts:
+            ko_count = 0
+            for result in self.simulation_results:
+                details = result['Details']
+                # 当該契約がこのシナリオで「シミュレーションによりKO」したか（分析期間内にKOしたことを確認）
+                is_ko = ((details['契約ID'] == contract_id) & (details['Type'] == 'Roll (Simulated KO)')).any()
+                if is_ko:
+                    ko_count += 1
+            ko_counts[contract_id] = ko_count
+
+        # 確率計算
+        if self.n_simulations > 0:
+            probabilities = pd.Series(ko_counts) / self.n_simulations
+        else:
+            probabilities = pd.Series(ko_counts, dtype=float)
+            
+        self.ko_probabilities = probabilities.sort_values(ascending=False)
+
+    def get_summary(self):
+        """シミュレーション結果の要約（期待値、上下限）を返す"""
+        if not self.simulation_results:
+            return None
+
+        profits = [result['TotalProfit'] for result in self.simulation_results]
+        profit_series = pd.Series(profits)
+
+        summary = {
+            'ExpectedProfit': profit_series.mean(),
+            'Profit_P5': profit_series.quantile(0.05), # 下限 (5パーセンタイル)
+            'Profit_P95': profit_series.quantile(0.95), # 上限 (95パーセンタイル)
+            'ProfitDistribution': profits,
+            'KOProbabilities': self.ko_probabilities
+        }
+        return summary
+
+    def get_detailed_results(self):
+        """全シナリオの詳細な結果を結合して返す"""
+        all_details = []
+        for i, result in enumerate(self.simulation_results):
+            details = result['Details'].copy()
+            details['Scenario'] = i + 1
+            all_details.append(details)
+        if not all_details:
+            return pd.DataFrame()
+        return pd.concat(all_details)
+
+# --------------------------------------------------------------------------------
+# 6. 実行と可視化
+# --------------------------------------------------------------------------------
+
+def run_analysis(contracts_df, historical_fx_df, analysis_config, seed=42):
+    """設定に基づき分析を実行し、結果を可視化する"""
+
+    # 分析の実行
+    profit_simulator = ProfitSimulator(
+        contracts_df=contracts_df,
+        historical_fx_df=historical_fx_df,
+        analysis_start_date=analysis_config['analysis_start_date'],
+        analysis_end_date=analysis_config['analysis_end_date'],
+        roll_rate_non_ko=analysis_config['roll_rate_non_ko'],
+        roll_rate_ko=analysis_config['roll_rate_ko'],
+        simulation_method=analysis_config['simulation_method'],
+        target_rates=analysis_config.get('target_rates'),
+        n_simulations=analysis_config['n_simulations']
+    )
+
+    summary = profit_simulator.run_simulation(seed=seed)
+
+    if summary is None:
+        print("Simulation failed or no results generated.")
+        return None, None
+
+    # 結果の表示
+    print("\n" + "="*30 + " Simulation Summary " + "="*30)
+    print(f"Analysis Period: {analysis_config['analysis_start_date']} to {analysis_config['analysis_end_date']}")
+    print(f"Simulation Method: {profit_simulator.simulation_method} ({profit_simulator.n_simulations} simulations)")
+    print(f"Expected Profit (期待収益): {summary['ExpectedProfit']:,.0f}")
+    print(f"Profit Range (P5 - P95) (収益レンジ): {summary['Profit_P5']:,.0f} - {summary['Profit_P95']:,.0f}")
+    print("="*80)
+
+    # 可視化
+    plot_results(summary, profit_simulator)
+
+    # 詳細データ
+    detailed_results = profit_simulator.get_detailed_results()
+
+    return summary, detailed_results
+
+
+def plot_results(summary, simulator):
+    """結果をグラフで可視化する"""
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 14))
+    fig.suptitle('デリバティブポートフォリオ収益シミュレーション結果', fontsize=16)
+
+    # 1. 収益分布のヒストグラム
+    ax = axes[0, 0]
+    if summary['ProfitDistribution'] and len(summary['ProfitDistribution']) > 1:
+        sns.histplot(summary['ProfitDistribution'], kde=True, ax=ax)
+        ax.axvline(summary['ExpectedProfit'], color='r', linestyle='--', label=f'期待値: {summary["ExpectedProfit"]:,.0f}')
+        ax.axvline(summary['Profit_P5'], color='g', linestyle=':', label=f'P5: {summary["Profit_P5"]:,.0f}')
+        ax.axvline(summary['Profit_P95'], color='g', linestyle=':', label=f'P95: {summary["Profit_P95"]:,.0f}')
+        ax.legend()
+        ax.set_title('総収益の分布 (モンテカルロ)')
+    else:
+        # 単一シナリオの場合 (Linearモデルなど)
+        ax.set_title('総収益 (単一シナリオ)')
+        if summary['ProfitDistribution']:
+            profit = summary['ProfitDistribution'][0]
+            ax.bar(['収益'], [profit])
+            ax.text(0, profit, f'{profit:,.0f}', ha='center', va='bottom')
+
+    ax.set_xlabel('総収益')
+    ax.set_ylabel('頻度')
+    # X軸のフォーマットをカンマ区切りにする
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+
+    # 2. 消滅確率の棒グラフ（上位20件）
+    ax = axes[0, 1]
+    # 消滅確率が0より大きいものの上位20件
+    top_ko_probs = summary['KOProbabilities'][summary['KOProbabilities'] > 0].head(20)
+    if not top_ko_probs.empty:
+        top_ko_probs.plot(kind='barh', ax=ax)
+        ax.set_title('消滅確率 上位20契約（分析期間内）')
+        ax.set_xlabel('確率')
+        ax.set_ylabel('契約ID')
+        ax.invert_yaxis() # 降順表示
+    else:
+        ax.text(0.5, 0.5, 'シミュレーション上の消滅なし', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+        ax.set_title('消滅確率')
+
+    # 3. 為替レートシミュレーションのパス（例としてUSDJPY）
+    ax = axes[1, 0]
+    target_currency = 'USDJPY'
+    if target_currency in simulator.fx_simulator.historical_fx_df.columns:
+        # 過去データ（分析開始の約6ヶ月前から表示）
+        start_date_plot = simulator.analysis_start_date - relativedelta(months=6)
+        historical_data = simulator.fx_simulator.historical_fx_df[target_currency]
+        
+        if not historical_data.empty:
+            # 過去データが存在する期間のみプロット
+            historical_data = historical_data.loc[max(historical_data.index.min(), start_date_plot):]
+            historical_data.plot(ax=ax, label='実績', color='black', linewidth=2)
+
+        # シミュレーションパス（最初の20パスのみ表示）
+        if simulator.simulation_start_date <= simulator.simulation_end_date:
+            for i in range(min(len(simulator.fx_scenarios), 20)):
+                scenario = simulator.fx_scenarios[i]
+                sim_data = scenario[target_currency].loc[simulator.simulation_start_date:]
+                sim_data.plot(ax=ax, color='grey', alpha=0.3, legend=False)
+
+        ax.set_title(f'{target_currency} 為替レートシミュレーション (サンプルパス)')
+        ax.set_xlabel('日付')
+        ax.set_ylabel('レート')
+        
+        # 凡例の重複を避ける
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(handles=[handles[0]], labels=[labels[0]])
+    else:
+        ax.text(0.5, 0.5, f'{target_currency} データなし', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+
+
+    # 4. 月次収益の期待値推移
+    ax = axes[1, 1]
+    detailed_results = simulator.get_detailed_results()
+    if not detailed_results.empty:
+        # シナリオごとの月次収益を集計し、月ごとの平均収益（期待値）を計算
+        monthly_profit = detailed_results.groupby(['Scenario', pd.Grouper(key='Date', freq='M')])['Profit'].sum().reset_index()
+        expected_monthly_profit = monthly_profit.groupby('Date')['Profit'].mean()
+
+        expected_monthly_profit.plot(kind='bar', ax=ax)
+        ax.set_title('月次期待収益の推移')
+        ax.set_xlabel('月')
+        ax.set_ylabel('期待収益')
+        if not expected_monthly_profit.empty:
+            # X軸のラベルを年月表示にする
+            ax.set_xticklabels([d.strftime('%Y-%m') for d in expected_monthly_profit.index], rotation=45, ha='right')
+        # Y軸のフォーマットをカンマ区切りにする
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, p: format(int(x), ',')))
+
+    else:
+        ax.text(0.5, 0.5, '収益詳細データなし', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+
+def analyze_details(summary, details, contracts_df):
+    """シミュレーション結果の詳細分析（データ抽出用）"""
+    if summary is None or details.empty:
+        return None, None
+
+    print("\n--- Detailed Analysis (詳細分析) ---")
+
+    # 1. 収益タイプ別の期待値
+    print("\n▼ Expected Profit by Type (収益タイプ別の期待値):")
+    # シナリオごとの合計を計算し、その平均（期待値）を求める
+    expected_profit_by_type = details.groupby(['Scenario', 'Type'])['Profit'].sum().groupby('Type').mean().sort_values(ascending=False)
+    print(expected_profit_by_type.map('{:,.0f}'.format))
+
+    # 2. 消滅確率の詳細データフレーム
+    print("\n▼ KO Probabilities Details (消滅確率の詳細 - 確率>0のみ):")
+    ko_probs = summary['KOProbabilities']
+    ko_details = ko_probs[ko_probs > 0].to_frame(name='KO_Probability')
     
-    # 線形（現状維持と円安進行の2パターン追加）
-    current_val = history_rates[ccy].iloc[-1]
-    df_flat = sim.generate_scenarios_linear(ccy, current_val, sim_days)
-    df_depr = sim.generate_scenarios_linear(ccy, current_val * 1.2, sim_days) # 20%円安
+    # 契約情報を結合
+    columns_to_join = ['_Type', '受取通貨', '支払通貨', '契約日', '終了日', '収益',
+                       'KO・KI相場(1行目)', 'KO・KI判定(1行目)', 
+                       '決済相場1', '決済相場2', 'ターゲット金額（円）', 'ターゲット回数（件数）']
     
-    df_flat.columns = ['Linear_Flat']
-    df_depr.columns = ['Linear_Depr']
+    ko_details = ko_details.join(contracts_df.set_index('契約ID')[columns_to_join])
     
-    # 結合
-    scenarios_dict[ccy] = pd.concat([df_gbm, df_flat, df_depr], axis=1)
+    # Jupyter Notebook環境で見やすく表示する場合は print の代わりに display() を使用
+    # display(ko_details)
+    print(ko_details)
+    
+    return expected_profit_by_type, ko_details
 
-# 4. シミュレーション実行
-df_results = sim.run_simulation(scenarios_dict)
+# --------------------------------------------------------------------------------
+# 実行例（Jupyterでこのブロックを実行してください）
+# --------------------------------------------------------------------------------
 
-# ==========================================
-# 集計と可視化
-# ==========================================
+if __name__ == '__main__':
+    # 1. データの準備（ダミーデータ生成または実データロード）
+    print("Preparing data...")
+    # ダミーデータの契約数を設定して生成
+    contracts_df, historical_fx_df = generate_dummy_data(n_contracts=500) 
 
-# シナリオごとの総収益計算 (Base + Roll)
-# ※Base収益は契約時に確定しているので、ここでの分析は「追加で得られるRoll収益の変動」が主眼になります
-scenario_stats = df_results.groupby('scenario_id')[['revenue_base', 'revenue_roll']].sum()
-scenario_stats['total_revenue'] = scenario_stats['revenue_base'] + scenario_stats['revenue_roll']
+    # 2. 分析設定
+    # ※分析対象期間やパラメータはここで設定します。
 
-# 結果表示
-print("\n--- シミュレーション結果概要 ---")
-print(scenario_stats['total_revenue'].describe().apply(lambda x: f"{x:,.0f}"))
+    # 例：今年度・来年度（2025年度・2026年度）の分析設定 (GBMモデル)
+    # 期間: 2025/4/1 から 2027/3/31
+    analysis_config_gbm = {
+        'analysis_start_date': '2025-04-01',
+        'analysis_end_date': '2027-03-31',
+        'roll_rate_non_ko': 0.6, # 可変設定1
+        'roll_rate_ko': 0.7,     # 可変設定2
+        'simulation_method': 'GBM',
+        'n_simulations': 1000    # シミュレーション回数
+    }
 
-# グラフ化
-fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+    # 例：線形モデルでの分析設定（特定の円安シナリオ）
+    analysis_config_linear = {
+        'analysis_start_date': '2025-04-01',
+        'analysis_end_date': '2027-03-31',
+        'roll_rate_non_ko': 0.6,
+        'roll_rate_ko': 0.7,
+        'simulation_method': 'Linear',
+        # 到達点のレートを設定
+        'target_rates': {'USDJPY': 170.0, 'EURJPY': 185.0, 'CNHJPY': 25.0},
+        'n_simulations': 1 # 線形モデルは1回
+    }
 
-# 1. 為替シナリオの可視化 (USDのみ例示)
-ax = axes[0, 0]
-scenarios_dict['USD'].plot(legend=False, alpha=0.3, color='blue', ax=ax)
-scenarios_dict['USD'][['Linear_Flat', 'Linear_Depr']].plot(ax=ax, color='red', linewidth=2, label='Linear Scenarios')
-ax.set_title('USD/JPY Simulation Paths')
-ax.set_ylabel('Rate')
-ax.grid(True)
+    # 3. 分析の実行
+    
+    # --- GBMモデルによるリスク評価 ---
+    print("\n" + "="*60)
+    print("【実行例1】 GBMモデルによる分析 (リスク評価)")
+    print("="*60)
+    # 再現性確保のためseedを指定
+    summary_gbm, details_gbm = run_analysis(contracts_df, historical_fx_df, analysis_config_gbm, seed=42)
 
-# 2. 収益分布 (ヒストグラム)
-ax = axes[0, 1]
-sns.histplot(scenario_stats['total_revenue'] / 100000000, kde=True, ax=ax, color='green')
-ax.set_title('Total Revenue Distribution (Simulation)')
-ax.set_xlabel('Revenue (億円)')
-ax.grid(True)
-# 期待値ライン
-exp_val = scenario_stats['total_revenue'].mean()
-ax.axvline(exp_val / 100000000, color='red', linestyle='--', label=f'Expected: {exp_val/100000000:.2f}億')
-ax.legend()
+    # 4. 追加分析（GBMモデル）
+    if summary_gbm:
+        expected_profit_gbm, ko_details_gbm = analyze_details(summary_gbm, details_gbm, contracts_df)
+        # 結果をCSVで保存する場合の例
+        # ko_details_gbm.to_csv('ko_probabilities_gbm.csv', encoding='utf-8-sig')
 
-# 3. 契約ごとの消滅確率 (上位20件)
-ax = axes[1, 0]
-ko_counts = df_results[df_results['is_ko']].groupby('contract_id')['scenario_id'].count()
-total_scenarios = len(scenarios_dict['USD'].columns)
-ko_probs = (ko_counts / total_scenarios).sort_values(ascending=False).head(20)
-ko_probs.plot(kind='bar', ax=ax, color='orange')
-ax.set_title('KO Probability by Contract (Top 20)')
-ax.set_ylabel('Probability')
-ax.set_ylim(0, 1)
-ax.grid(axis='y')
 
-# 4. 消滅理由の内訳
-ax = axes[1, 1]
-status_counts = df_results['status'].value_counts()
-status_counts.plot(kind='pie', autopct='%1.1f%%', ax=ax, startangle=90)
-ax.set_title('Outcome Breakdown (All Scenarios)')
-ax.set_ylabel('')
+    # # --- 線形モデルによるシナリオ分析 ---
+    # print("\n" + "="*60)
+    # print("【実行例2】 線形モデルによる分析 (シナリオ分析)")
+    # print("="*60)
+    # summary_linear, details_linear = run_analysis(contracts_df, historical_fx_df, analysis_config_linear, seed=42)
 
-plt.tight_layout()
-plt.show()
-
-# 追加分析用データの出力例
-print("\n--- 詳細データ例 (df_results) ---")
-print(df_results.head())
-
+    # # 5. 追加分析（線形モデル）
+    # if summary_linear:
+    #      analyze_details(summary_linear, details_linear, contracts_df)
