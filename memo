@@ -1,760 +1,498 @@
-import pandas as pd
+import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib import font_manager
-from matplotlib.patches import Patch
-from IPython.display import display
-
-# --- Matplotlibの日本語フォント設定---
-def set_japanese_font():
-    jp_fonts = ['Hiragino Sans', 'Yu Gothic', 'Meiryo', 'Noto Sans CJK JP', 'MS Gothic', 'IPAexGothic']
-    available_fonts = [f.name for f in font_manager.fontManager.ttflist]
-    font_set = False
-    for font in jp_fonts:
-        if font in available_fonts:
-            plt.rcParams['font.family'] = font
-            font_set = True
-            break
-    if not font_set:
-        pass
-
-set_japanese_font()
-plt.rcParams['figure.figsize'] = (12, 6)
-plt.rcParams['axes.grid'] = True
-plt.rcParams['axes.axisbelow'] = True  # グリッド線をグラフの背面に設定
-plt.rcParams['grid.linestyle'] = '--'
-plt.rcParams['grid.alpha'] = 0.7
-
-# =========================================================
-# 1. 各種マスタとインプットデータの生成（4月開始・12ヶ月分）
-# =========================================================
-
-# freq='M' から freq='ME' へ修正
-months = pd.date_range(start='2025-03-31', end='2026-03-31', freq='ME').strftime('%Y-%m')
-np.random.seed(42)
-
-# ① マクロ指標データ（政策金利初期パスを0.75%に修正）
-macro_data = []
-current_rates = {'政策金利': 0.0075, '国内金利': 0.008, '米国金利': 0.040}
-current_prices = {'国内株価': 2500.0, '米国株価': 5000.0, 'JREIT': 1800.0, '投信価格': 10000.0, 'USDJPY': 145.0}
-
-for m in months:
-    macro_data.append({
-        '年月': m,
-        '政策金利': current_rates['政策金利'],
-        '国内金利': current_rates['国内金利'],
-        '米国金利': current_rates['米国金利'],
-        '国内株価': current_prices['国内株価'],
-        '米国株価': current_prices['米国株価'],
-        'JREIT': current_prices['JREIT'],
-        '投信価格': current_prices['投信価格'],
-        'USDJPY': current_prices['USDJPY']
-    })
-    current_rates['国内金利'] += np.random.normal(0, 0.0003)
-    current_rates['米国金利'] += np.random.normal(0, 0.0010)
-    current_prices['国内株価'] *= (1 + np.random.normal(0.005, 0.03))
-    current_prices['米国株価'] *= (1 + np.random.normal(0.008, 0.04))
-    current_prices['JREIT'] *= (1 + np.random.normal(0.003, 0.025))
-    current_prices['投信価格'] *= (1 + np.random.normal(0.006, 0.02))
-    current_prices['USDJPY'] *= (1 + np.random.normal(0.000, 0.015))
-
-df_macro = pd.DataFrame(macro_data)
-
-# ② 銘柄マスタ（8資産）
-df_master = pd.DataFrame([
-    {'銘柄コード': 'B001', '銘柄名': '国内国債10年',   '資産区分': '内債_固定'},
-    {'銘柄コード': 'B002', '銘柄名': '国内変動付社債', '資産区分': '内債_変動'},
-    {'銘柄コード': 'B003', '銘柄名': '米国債H有',       '資産区分': '外債H有_固定'},
-    {'銘柄コード': 'B004', '銘柄名': '米国変動債H有',   '資産区分': '外債H有_変動'},
-    {'銘柄コード': 'B005', '銘柄名': '米国債H無',       '資産区分': '外債Hなし'},
-    {'銘柄コード': 'E001', '銘柄名': 'TOPIX連動ETF',    '資産区分': '内株'},
-    {'銘柄コード': 'R001', '銘柄名': 'J-REITファンド',  '資産区分': 'J-REIT'},
-    {'銘柄コード': 'F001', '銘柄名': 'バランス型投信',  '資産区分': '投信'}
-])
-
-# ③ ベンチマーク設定マスタ
-df_bm_attr = pd.DataFrame([
-    {'資産区分': '内債_固定',     'BMウェイト': 0.30, 'デュレーション': 8.0, 'ベータ': 0.0, '参照金利': '国内金利', '参照株価': None,     '参照為替': None},
-    {'資産区分': '内債_変動',     'BMウェイト': 0.10, 'デュレーション': 0.5, 'ベータ': 0.0, '参照金利': '国内金利', '参照株価': None,     '参照為替': None},
-    {'資産区分': '外債H有_固定',  'BMウェイト': 0.10, 'デュレーション': 7.0, 'ベータ': 0.0, '参照金利': '米国金利', '参照株価': None,     '参照為替': None},
-    {'資産区分': '外債H有_変動',  'BMウェイト': 0.05, 'デュレーション': 0.5, 'ベータ': 0.0, '参照金利': '米国金利', '参照株価': None,     '参照為替': None},
-    {'資産区分': '外債Hなし',     'BMウェイト': 0.05, 'デュレーション': 7.0, 'ベータ': 0.0, '参照金利': '米国金利', '参照株価': None,     '参照為替': 'USDJPY'},
-    {'資産区分': '内株',         'BMウェイト': 0.15, 'デュレーション': 0.0, 'ベータ': 1.0, '参照金利': None,     '参照株価': '国内株価', '参照為替': None},
-    {'資産区分': 'J-REIT',       'BMウェイト': 0.05, 'デュレーション': 0.0, 'ベータ': 1.0, '参照金利': None,     '参照株価': 'JREIT',    '参照為替': None},
-    {'資産区分': '投信',         'BMウェイト': 0.20, 'デュレーション': 0.0, 'ベータ': 1.0, '参照金利': None,     '参照株価': '投信価格', '参照為替': None},
-])
-
-# ④ ベンチマーク・リターンの生成
-bm_data_list = []
-for i in range(1, len(months)):
-    prev_m = months[i-1]
-    curr_m = months[i]
-    mac_prev = df_macro[df_macro['年月'] == prev_m].iloc[0]
-    mac_curr = df_macro[df_macro['年月'] == curr_m].iloc[0]
-    
-    for _, row in df_bm_attr.iterrows():
-        ret = 0.0
-        if row['参照金利']:
-            rate_diff = mac_curr[row['参照金利']] - mac_prev[row['参照金利']]
-            ret += -row['デュレーション'] * rate_diff + (mac_prev[row['参照金利']] / 12)
-        if row['参照株価']:
-            price_ret = (mac_curr[row['参照株価']] / mac_prev[row['参照株価']]) - 1
-            ret += row['ベータ'] * price_ret
-        if row['参照為替']:
-            fx_ret = (mac_curr[row['参照為替']] / mac_prev[row['参照為替']]) - 1
-            ret += fx_ret
-            
-        bm_data_list.append({'年月': curr_m, '資産区分': row['資産区分'], 'BMリターン': ret})
-
-df_bm = pd.DataFrame(bm_data_list)
-df_bm = pd.merge(df_bm, df_bm_attr[['資産区分', 'BMウェイト']], on='資産区分', how='left')
-
-# ⑤ 月末残高と期中取引の生成
-holdings_state = {
-    'B001': {'qty': 30000, 'price': 100.0}, 'B002': {'qty': 10000, 'price': 100.0},
-    'B003': {'qty': 10000, 'price': 110.0}, 'B004': {'qty': 5000,  'price': 110.0},
-    'B005': {'qty': 5000,  'price': 110.0}, 'E001': {'qty': 1000,  'price': 1500.0},
-    'R001': {'qty': 250,   'price': 2000.0}, 'F001': {'qty': 2000,  'price': 10000.0}
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy.optimize import minimize
+import io
+st.set_page_config(page_title="債券ポートフォリオ最適化 シミュレータ", layout="wide")
+# ==========================================
+# 1. Base Variables & Utility Functions
+# ==========================================
+SCENARIO_NAMES = {
+    'Base': 'Base (現状維持)', 'Up': '平行シフト上昇', 'Down': '平行シフト下落',
+    'Steep': 'スティープ化', 'Flat': 'フラット化', 'ShortUp': '短期金利上昇', 'ShortDown': '短期金利低下'
 }
-
-holdings_data = []
-transactions_data = []
-
-for code, state in holdings_state.items():
-    holdings_data.append({'年月': months[0], '銘柄コード': code, '月末数量': state['qty'], '時価単価': state['price']})
-
-for m in months[1:]:
-    bm_month = df_bm[df_bm['年月'] == m].set_index('資産区分')
-    
-    for code, state in holdings_state.items():
-        asset = df_master[df_master['銘柄コード'] == code]['資産区分'].iloc[0]
-        bm_ret = bm_month.loc[asset, 'BMリターン']
-        indiv_ret = bm_ret + np.random.normal(0, 0.001) 
-        state['price'] *= (1 + indiv_ret)
-        
-        trade_qty = 0
-        is_buy = True
-        
-        if indiv_ret < -0.015: 
-            trade_qty = int(state['qty'] * 0.05)
-            is_buy = True
-        elif indiv_ret > 0.02: 
-            trade_qty = int(state['qty'] * 0.03)
-            is_buy = False
-        elif np.random.rand() > 0.8:
-            trade_qty = int(state['qty'] * 0.01)
-            is_buy = np.random.rand() > 0.4
+SCENARIO_PROBS = { n: p for n, p in zip(SCENARIO_NAMES.values(), [0.30, 0.20, 0.10, 0.15, 0.10, 0.10, 0.05]) }
+BUCKET_ORDER = ['残存1-3年', '残存3-5年', '残存5-7年', '残存7-10年', '残存10年超']
+DYNAMIC_STRATS = [
+    "全銘柄を一律割合で入替 (予算上限)",
+    "長期から優先して入替 (予算上限)",
+    "短期から優先して入替 (予算上限)"
+]
+def get_bucket(d):
+    if d < 3.0: return '残存1-3年'
+    elif d < 5.0: return '残存3-5年'
+    elif d < 7.0: return '残存5-7年'
+    elif d < 10.0: return '残存7-10年'
+    else: return '残存10年超'
+def get_bucket_d_proxy(b):
+    if b == '残存1-3年': return 2.0
+    if b == '残存3-5年': return 4.0
+    if b == '残存5-7年': return 6.0
+    if b == '残存7-10年': return 8.5
+    return 12.0
+def get_unified_ys(sc_name, t, bucket_name, d, df_scenarios=None):
+    if df_scenarios is not None and not df_scenarios.empty:
+        df_match = df_scenarios[(df_scenarios['Scenario_Name'] == sc_name) & (df_scenarios['Bucket'] == bucket_name)]
+        if not df_match.empty:
+            try: return float(df_match.iloc[0][f'Year{t+1}_Shift'])
+            except: pass
             
-        if trade_qty > 0:
-            trade_type = '買' if is_buy else '売'
-            cost_rate = 0.001 if code in ['E001', 'R001', 'F001'] else 0.0001
-            cost = trade_qty * state['price'] * cost_rate
-            transactions_data.append({'年月': m, '銘柄コード': code, '区分': trade_type, '数量': trade_qty, '単価': state['price'], '金額': trade_qty * state['price'], 'コスト': cost})
-            state['qty'] += trade_qty if is_buy else -trade_qty
-
-        if np.random.rand() > 0.7:
-            transactions_data.append({'年月': m, '銘柄コード': code, '区分': 'インカム', '数量': 0, '単価': 0, '金額': state['qty'] * state['price'] * 0.002, 'コスト': 0})
-
-        holdings_data.append({'年月': m, '銘柄コード': code, '月末数量': state['qty'], '時価単価': state['price']})
-
-df_holdings = pd.DataFrame(holdings_data)
-df_transactions = pd.DataFrame(transactions_data)
-
-
-# =========================================================
-# 2. 計算エンジン（単月の要因分解を行う関数）
-# =========================================================
-def calculate_attribution(target_month, prev_month, df_h, df_t, df_b, df_mac, df_mast, df_attr):
-    policy_rate = df_mac[df_mac['年月'] == target_month]['政策金利'].iloc[0]
-    A = (policy_rate + 0.008) / 12  
+    # BCBS 368 JPY Exact Parameters (Annex 2)
+    tf_ratio = (t + 1) / 5.0
+    E = np.exp(-d / 4.0)
     
-    h_start = df_h[df_h['年月'] == prev_month].copy().rename(columns={'月末数量': '期首数量', '時価単価': '期首単価'})
-    h_start = pd.merge(h_start, df_mast[['銘柄コード', '資産区分']], on='銘柄コード', how='left')
-    h_start['期首評価額'] = h_start['期首数量'] * h_start['期首単価']
-    h_end = df_h[df_h['年月'] == target_month].copy().rename(columns={'月末数量': '期末数量', '時価単価': '期末単価'})
+    val = 0.0
+    if sc_name == SCENARIO_NAMES['Base']: val = 0.0
+    elif sc_name == SCENARIO_NAMES['Up']: val = 1.00
+    elif sc_name == SCENARIO_NAMES['Down']: val = -1.00
+    elif sc_name == SCENARIO_NAMES['Steep']: val = -1.625 * E + 0.90 * (1.0 - E)
+    elif sc_name == SCENARIO_NAMES['Flat']: val = 2.00 * E - 0.60 * (1.0 - E)
+    elif sc_name == SCENARIO_NAMES['ShortUp']: val = 2.50 * E
+    elif sc_name == SCENARIO_NAMES['ShortDown']: val = -2.50 * E
+    return round(val * tf_ratio, 4)
+def build_ys_tensor(df, S_names, df_scenarios=None):
+    S = len(S_names); N = len(df)
+    YS = np.zeros((S, 5, N))
+    min_d = df['Duration'].min()
+    short_b = df.loc[df['Duration'].idxmin(), 'Bucket'] if len(df) > 0 else "N/A"
+    short_YS = np.zeros((S, 5))
+    for s_idx, sc_name in enumerate(S_names):
+        for t in range(5):
+            for i, row in df.iterrows():
+                YS[s_idx, t, i] = get_unified_ys(sc_name, t, row['Bucket'], row['Duration'], df_scenarios)
+            short_YS[s_idx, t] = get_unified_ys(sc_name, t, short_b, min_d, df_scenarios)
+    return YS, short_YS
+def build_mc_ys_tensor(df, mc_count):
+    S = mc_count; N = len(df)
+    S_names = [f"MC_{i}" for i in range(S)]
+    YS = np.zeros((S, 5, N))
+    np.random.seed(42)
+    lvls = np.cumsum(np.random.normal(0.0, 0.3, (S, 5)), axis=1)
+    slps = np.cumsum(np.random.normal(0.0, 0.15, (S, 5)), axis=1)
+    factor = (df['Duration'].values - 2.0) / 8.0
+    for t in range(5): YS[:, t, :] = lvls[:, t, None] + slps[:, t, None] * factor[None, :]
+    min_idx = df['Duration'].argmin()
+    short_YS = YS[:, :, min_idx]
+    return S_names, YS, short_YS
+# ==========================================
+# 2. Main Logic Functions
+# ==========================================
+def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta, short_bucket_YS, include_t0=False):
+    S = len(S_names); N = len(df)
+    tot_book = df['Book_Value'].sum()
+    coupons = df['Coupon'].values
+    durations = df['Duration'].values
+    b_vals = df['Book_Value'].values
+    m_vals = df['Market_Value'].values
+    RY = df['Current_Yield'].values[None, None, :] + YS_tensor
+    stay_yield = np.zeros((S, 5, N))
+    swap_yield = np.zeros((S, 5, N))
     
-    t_month = df_t[df_t['年月'] == target_month].copy()
-    t_month = pd.merge(t_month, df_mast[['銘柄コード', '資産区分']], on='銘柄コード', how='left')
+    for t in range(5):
+        for i, d in enumerate(durations):
+            m_cycles = int(t // max(1.0, d))
+            if m_cycles == 0:
+                stay_yield[:, t, i] = coupons[i]
+                swap_yield[:, t, i] = RY[:, 0, i]
+            else:
+                m_time = int(m_cycles * max(1.0, d))
+                if m_time > 4: m_time = 4
+                stay_yield[:, t, i] = RY[:, m_time, i]
+                swap_yield[:, t, i] = RY[:, m_time, i]
     
-    income = t_month[t_month['区分'] == 'インカム'].groupby('銘柄コード')['金額'].sum().reset_index().rename(columns={'金額':'インカム'})
-    trades = t_month[t_month['区分'].isin(['買', '売'])].copy()
-    trades['数量増減'] = trades.apply(lambda x: x['数量'] if x['区分'] == '買' else -x['数量'], axis=1)
-    trades['受渡金額'] = trades.apply(lambda x: -x['金額'] if x['区分'] == '買' else x['金額'], axis=1)
-    trade_summary = trades.groupby('銘柄コード').agg({'数量増減': 'sum', '受渡金額': 'sum', 'コスト': 'sum'}).reset_index()
-
-    df_eval = pd.merge(h_start, h_end[['銘柄コード', '期末単価']], on='銘柄コード', how='left')
-    df_eval['BH期末評価額'] = df_eval['期首数量'] * df_eval['期末単価']
-    df_eval = pd.merge(df_eval, income, on='銘柄コード', how='left').fillna(0)
-    df_eval['BH損益額'] = (df_eval['BH期末評価額'] - df_eval['期首評価額']) + df_eval['インカム']
+    C_stay_inc = np.sum((1 - W[None, None, :]) * b_vals[None, None, :] * stay_yield / 100.0, axis=2)
+    reinvest_inc = np.sum(W[None, None, :] * m_vals[None, None, :] * swap_yield / 100.0, axis=2)
+    asset_inc = C_stay_inc + reinvest_inc
     
-    df_eval = pd.merge(df_eval, trade_summary, on='銘柄コード', how='left').fillna(0)
-    df_eval['実際期末評価額'] = (df_eval['期首数量'] + df_eval['数量増減']) * df_eval['期末単価']
-    df_eval['実際損益額'] = (df_eval['実際期末評価額'] - df_eval['期首評価額']) + df_eval['受渡金額'] + df_eval['インカム'] - df_eval['コスト']
-    df_eval['タイミング効果額'] = df_eval['実際損益額'] - df_eval['BH損益額'] + df_eval['コスト']
-
-    port_start_value = df_eval['期首評価額'].sum()
-    B = df_eval['実際損益額'].sum() / port_start_value
-    T = df_eval['タイミング効果額'].sum() / port_start_value
-    Cost = -df_eval['コスト'].sum() / port_start_value
+    liab_cost = tot_book * ((base_cost + deposit_beta * short_bucket_YS) / 100.0)
+    nii_paths = asset_inc - liab_cost
     
-    asset_eval = df_eval.groupby('資産区分').agg({'期首評価額': 'sum', 'BH損益額': 'sum'}).reset_index()
-    asset_eval['期首ウェイト'] = asset_eval['期首評価額'] / port_start_value
-    asset_eval['BHリターン'] = asset_eval['BH損益額'] / asset_eval['期首評価額']
+    nii_t0_asset = np.sum((1 - W) * b_vals * (coupons / 100.0)) + np.sum(W * m_vals * (df['Current_Yield'].values / 100.0))
+    nii_t0_liab = tot_book * (base_cost / 100.0)
+    nii_t0 = nii_t0_asset - nii_t0_liab
     
-    asset_tc = df_eval.groupby('資産区分').agg({'タイミング効果額': 'sum', 'コスト': 'sum', '実際損益額': 'sum'}).reset_index()
-    asset_tc['タイミング効果額'] /= port_start_value
-    asset_tc['コスト'] = -asset_tc['コスト'] / port_start_value
-    asset_tc['実績B'] = asset_tc['実際損益額'] / port_start_value
-    asset_eval = pd.merge(asset_eval, asset_tc, on='資産区分', how='left').fillna(0)
+    res = {}
+    for s_idx, sc_name in enumerate(S_names):
+        p = nii_paths[s_idx, :]
+        res[sc_name] = [nii_t0] + p.tolist() if include_t0 else p.tolist()
+    return res
+def optimize_portfolio_vectorized(df, tgt_budget, base_cost, depo_beta, S_names, YS_tensor, short_YS, obj_mode="Min-Max"):
+    elig_i = np.where(df['Swap_Eligible'].values == 1)[0]
+    if len(elig_i) == 0: return np.zeros(len(df))
     
-    bm_month = df_b[df_b['年月'] == target_month].copy()
-    asset_eval = pd.merge(asset_eval, bm_month, on='資産区分', how='inner')
+    def obj_func(w_opt):
+        W = np.zeros(len(df)); W[elig_i] = w_opt
+        paths = calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, depo_beta, short_YS, False)
+        tots = [sum(p) for p in paths.values()]
+        if "Min-Max" in obj_mode: return -np.percentile(tots, 5) if len(S_names) > 10 else -min(tots)
+        else: return -np.mean(tots) if len(S_names) > 10 else -sum(SCENARIO_PROBS.get(s, 1.0/len(S_names)) * sum(paths[s]) for s in S_names)
     
-    C = (asset_eval['BMウェイト'] * asset_eval['BMリターン']).sum()
+    def c_max(w_opt):
+        W = np.zeros(len(df)); W[elig_i] = w_opt
+        return tgt_budget - np.sum(W * df['Realized_Loss'].values)
+        
+    bounds = tuple((0.0, 1.0) for _ in range(len(elig_i)))
+    res = minimize(obj_func, np.zeros(len(elig_i)), method='SLSQP', bounds=bounds, constraints={'type': 'ineq', 'fun': c_max})
+    final_W = np.zeros(len(df)); final_W[elig_i] = res.x
+    return final_W * df['Book_Value'].values
+def get_strategy_volumes(df, df_strategies, strategy_name, budget_limit=50.0):
+    vols = np.zeros(len(df))
+    if strategy_name == "現状維持 (すべて0)": return vols
     
-    asset_eval['アロケーション効果'] = (asset_eval['期首ウェイト'] - asset_eval['BMウェイト']) * (asset_eval['BMリターン'] - C)
-    asset_eval['銘柄選択効果'] = asset_eval['BMウェイト'] * (asset_eval['BHリターン'] - asset_eval['BMリターン'])
-    
-    asset_eval['ベンチマークC'] = asset_eval['BMウェイト'] * asset_eval['BMリターン']
-    asset_eval['資産別B_C'] = asset_eval['実績B'] - asset_eval['ベンチマークC']
-    asset_eval['資産別行動_誤差'] = asset_eval['資産別B_C'] - (asset_eval['アロケーション効果'] + asset_eval['銘柄選択効果'] + asset_eval['タイミング効果額'] + asset_eval['コスト'])
-    
-    alloc_eff = asset_eval['アロケーション効果'].sum()
-    select_eff = asset_eval['銘柄選択効果'].sum()
-    action_unexplained = asset_eval['資産別行動_誤差'].sum()
-    
-    mac_prev = df_mac[df_mac['年月'] == prev_month].iloc[0]
-    mac_curr = df_mac[df_mac['年月'] == target_month].iloc[0]
-    env_interest, env_stock = 0.0, 0.0
-    
-    for _, row in df_attr.iterrows():
-        bm_weight = row['BMウェイト']
-        if row['参照金利']:
-            rate_diff = mac_curr[row['参照金利']] - mac_prev[row['参照金利']]
-            factor_ret = -row['デュレーション'] * rate_diff + (mac_prev[row['参照金利']] / 12)
-            env_interest += bm_weight * factor_ret
-        if row['参照株価']:
-            price_ret = (mac_curr[row['参照株価']] / mac_prev[row['参照株価']]) - 1
-            factor_ret = row['ベータ'] * price_ret
-            env_stock += bm_weight * factor_ret
-        if row['参照為替']:
-            fx_ret = (mac_curr[row['参照為替']] / mac_prev[row['参照為替']]) - 1
-            env_stock += bm_weight * fx_ret 
-            
-    env_other = C - (env_interest + env_stock)
-
-    res_dict = {
-        '年月': target_month,
-        '目標(A)': A, '実績(B)': B, 'ベンチマーク(C)': C,
-        'マクロ環境(C-A)': C - A, '行動(B-C)': B - C,
-        '環境_金利': env_interest, '環境_株式等': env_stock, '環境_目標控除': -A, '環境_誤差': env_other,
-        '行動_配分': alloc_eff, '行動_銘柄': select_eff, '行動_売買': T, '行動_コスト': Cost, '行動_誤差': action_unexplained
-    }
-    
-    for _, row in df_attr.iterrows():
-        ast = row['資産区分']
-        if ast in asset_eval['資産区分'].values:
-            ast_row = asset_eval[asset_eval['資産区分'] == ast].iloc[0]
-            res_dict[f'配分_{ast}'] = ast_row['アロケーション効果']
-            res_dict[f'銘柄_{ast}'] = ast_row['銘柄選択効果']
-            res_dict[f'売買_{ast}'] = ast_row['タイミング効果額']
-            res_dict[f'コスト_{ast}'] = ast_row['コスト']
-            res_dict[f'誤差_{ast}'] = ast_row['資産別行動_誤差']
+    if strategy_name in DYNAMIC_STRATS:
+        elig_df = df[df['Swap_Eligible'] == 1].copy()
+        if elig_df.empty: return vols
+        if strategy_name == "全銘柄を一律割合で入替 (予算上限)":
+            tl = elig_df['Realized_Loss'].sum()
+            if tl <= 0: return vols
+            ratio = min(1.0, budget_limit / tl)
+            for idx in elig_df.index: vols[idx] = df.at[idx, 'Book_Value'] * ratio
         else:
-            res_dict[f'配分_{ast}'] = res_dict[f'銘柄_{ast}'] = res_dict[f'売買_{ast}'] = res_dict[f'コスト_{ast}'] = res_dict[f'誤差_{ast}'] = 0.0
-
-    return res_dict
-
-results = []
-for i in range(1, len(months)):
-    res = calculate_attribution(months[i], months[i-1], df_holdings, df_transactions, df_bm, df_macro, df_master, df_bm_attr)
-    results.append(res)
-df_results = pd.DataFrame(results)
-
-# =========================================================
-# 3. カリーノ法（Carino Smoothing）による累積計算
-# =========================================================
-def calculate_cumulative_carino(df_res, attr_list):
-    A_cum = np.prod(1 + df_res['目標(A)']) - 1
-    C_cum = np.prod(1 + df_res['ベンチマーク(C)']) - 1
-    B_cum = np.prod(1 + df_res['実績(B)']) - 1
+            sorted_df = elig_df.sort_values(by='Duration', ascending=(strategy_name == "短期から優先して入替 (予算上限)"))
+            rb = budget_limit
+            for idx in sorted_df.index:
+                ml = sorted_df.at[idx, 'Realized_Loss']
+                bv = sorted_df.at[idx, 'Book_Value']
+                if ml <= 0:
+                    vols[idx] = bv
+                elif rb >= ml:
+                    vols[idx] = bv
+                    rb -= ml
+                else:
+                    vols[idx] = bv * (rb / ml)
+                    break
+        return vols
     
-    def calc_k(r1, r2):
-        if abs(r1 - r2) < 1e-8:
-            return 1 / (1 + r1)
-        return (np.log(1 + r1) - np.log(1 + r2)) / (r1 - r2)
-            
-    K_CA = calc_k(C_cum, A_cum)
-    k_CA_t = df_res.apply(lambda row: calc_k(row['ベンチマーク(C)'], row['目標(A)']), axis=1)
-    coef_CA = k_CA_t / K_CA
-    
-    K_BC = calc_k(B_cum, C_cum)
-    k_BC_t = df_res.apply(lambda row: calc_k(row['実績(B)'], row['ベンチマーク(C)']), axis=1)
-    coef_BC = k_BC_t / K_BC
-    
-    res_cum = {
-        '累積目標(A)': A_cum, '累積ベンチマーク(C)': C_cum, '累積実績(B)': B_cum,
-        '累積マクロ環境(C-A)': C_cum - A_cum, '累積行動(B-C)': B_cum - C_cum,
-        '累積環境_金利': (df_res['環境_金利'] * coef_CA).sum(),
-        '累積環境_株式等': (df_res['環境_株式等'] * coef_CA).sum(),
-        '累積環境_目標控除': (df_res['環境_目標控除'] * coef_CA).sum(),
-        '累積環境_誤差': (df_res['環境_誤差'] * coef_CA).sum(),
-        '累積行動_配分': (df_res['行動_配分'] * coef_BC).sum(),
-        '累積行動_銘柄': (df_res['行動_銘柄'] * coef_BC).sum(),
-        '累積行動_売買': (df_res['行動_売買'] * coef_BC).sum(),
-        '累積行動_コスト': (df_res['行動_コスト'] * coef_BC).sum(),
-        '累積行動_誤差': (df_res['行動_誤差'] * coef_BC).sum()
-    }
-    
-    for ast in attr_list:
-        res_cum[f'累積配分_{ast}'] = (df_res[f'配分_{ast}'] * coef_BC).sum()
-        res_cum[f'累積銘柄_{ast}'] = (df_res[f'銘柄_{ast}'] * coef_BC).sum()
-        res_cum[f'累積売買_{ast}'] = (df_res[f'売買_{ast}'] * coef_BC).sum()
-        res_cum[f'累積コスト_{ast}'] = (df_res[f'コスト_{ast}'] * coef_BC).sum()
-        res_cum[f'累積誤差_{ast}'] = (df_res[f'誤差_{ast}'] * coef_BC).sum()
+    for b_name in df['Bucket'].unique():
+        match = df_strategies[(df_strategies['Strategy_Name'] == strategy_name) & (df_strategies['Bucket'] == b_name)]
+        if not match.empty:
+            vol = float(match['Swap_Volume'].values[0])
+            b_items = df[(df['Bucket'] == b_name) & (df['Swap_Eligible'] == 1)]
+            if not b_items.empty and b_items['Book_Value'].sum() > 0:
+                ratio = min(1.0, vol / b_items['Book_Value'].sum())
+                for idx in b_items.index: vols[idx] = ratio * b_items.at[idx, 'Book_Value']
+    return vols
+# ==========================================
+# 3. Excel Utilities
+# ==========================================
+def get_sample_excel():
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        np.random.seed(42)
+        port_data = []
+        for i in range(1, 41):
+            dur = round(np.random.uniform(1.0, 14.0), 1)
+            is_recent = np.random.rand() < 0.2
+            if is_recent:
+                coupon = round(np.random.uniform(0.5, 1.5), 2)
+                eligible = 0 if np.random.rand() < 0.8 else 1
+            else:
+                coupon = round(np.random.uniform(0.05, 0.3), 2)
+                eligible = 1
+            book = round(np.random.uniform(50, 200), -1)
+            mkt = round(book * (1.0 - (dur * 0.015)), -1)
+            port_data.append({'Item_Name': f'Bond_{i:02d}_{"Recent" if is_recent else "Legacy"}', 'Book_Value': book, 'Market_Value': mkt, 'Coupon': coupon, 'Duration': dur, 'Swap_Eligible': eligible})
+        pd.DataFrame(port_data).to_excel(writer, sheet_name='Portfolio', index=False)
         
-    return res_cum
-
-asset_classes = df_bm_attr['資産区分'].tolist()
-cum_res = calculate_cumulative_carino(df_results, asset_classes)
-
-# =========================================================
-# 4. 可視化（ストーリー性のあるグラフ群）
-# =========================================================
-# グラフ①～④：縦幅を狭め、文字サイズを拡大、半透明を解消
-def plot_waterfall(ax, categories, values, bottoms, colors, title, ylabel=''):
-    ax.bar(categories, values, bottom=bottoms, color=colors, edgecolor='white', alpha=1.0)
-    ax.set_title(title, fontsize=16, fontweight='bold')
-    if ylabel: ax.set_ylabel(ylabel, fontsize=14)
-    ax.axhline(0, color='black', linewidth=0.8)
-    ax.tick_params(axis='both', which='major', labelsize=12)
-    for i, v in enumerate(values):
-        text_color = 'white' if colors[i] in ['navy', 'dimgray', 'purple', 'gray', '#4472c4'] else 'black'
-        ax.text(i, bottoms[i] + v/2, f"{v:+.2f}%", ha='center', va='center', color=text_color, fontweight='bold', fontsize=12)
-
-def get_bot_col(values, pos_c, neg_c, tot_pos_c, tot_neg_c):
-    bot = [0]
-    curr = 0
-    cols = []
-    for v in values[:-1]:
-        cols.append(pos_c if v >= 0 else neg_c)
-        curr += v
-        bot.append(curr)
-    bot[-1] = 0
-    cols.append(tot_pos_c if values[-1] >= 0 else tot_neg_c)
-    return bot, cols
-
-# グラフサイズを (18, 12) から (18, 10) へ変更し長方形寄りに
-fig, axes = plt.subplots(2, 2, figsize=(18, 10))
-plt.subplots_adjust(hspace=0.4, wspace=0.2)
-ax1, ax2, ax3, ax4 = axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]
-
-cat1 = ['累積目標(A)', '環境要因(C-A)', '行動要因(B-C)', '累積実績(B)']
-val1 = [cum_res['累積目標(A)']*100, cum_res['累積マクロ環境(C-A)']*100, cum_res['累積行動(B-C)']*100, cum_res['累積実績(B)']*100]
-bot1 = [0, val1[0], val1[0] + val1[1], 0]
-col1 = ['gray', 'skyblue' if val1[1] >= 0 else 'salmon', 'lightgreen' if val1[2] >= 0 else 'salmon', 'navy']
-plot_waterfall(ax1, cat1, val1, bot1, col1, '① マクロ・アトリビューション (累積期間)', '累積リターン (%)')
-
-cat2 = ['金利', '株式等', '誤差', '目標控除', '全体(C-A)']
-val2 = [cum_res['累積環境_金利']*100, cum_res['累積環境_株式等']*100, cum_res['累積環境_誤差']*100, cum_res['累積環境_目標控除']*100, cum_res['累積マクロ環境(C-A)']*100]
-bot2, col2 = get_bot_col(val2, 'lightblue', 'lightpink', 'skyblue', 'salmon')
-plot_waterfall(ax2, cat2, val2, bot2, col2, '② 環境要因(C-A)の累積詳細', '寄与度 (%)')
-
-cat3 = ['配分', '銘柄', '売買', 'コスト', '誤差', '全体(B-C)']
-val3 = [cum_res['累積行動_配分']*100, cum_res['累積行動_銘柄']*100, cum_res['累積行動_売買']*100, cum_res['累積行動_コスト']*100, cum_res['累積行動_誤差']*100, cum_res['累積行動(B-C)']*100]
-bot3, col3 = get_bot_col(val3, 'palegreen', 'lightpink', 'lightgreen', 'salmon')
-plot_waterfall(ax3, cat3, val3, bot3, col3, '③ 行動要因(B-C)の全体詳細', '寄与度 (%)')
-
-factors = ['配分', '銘柄', '売買', 'コスト', '誤差']
-x = np.arange(len(factors))
-width = 0.6
-pos_bottom = np.zeros(len(factors))
-neg_bottom = np.zeros(len(factors))
-
-colors_palette = ['#5b9bd5', '#9dc3e6', '#ed7d31', '#f4b084', '#a5a5a5', '#ffc000', '#70ad47', '#4472c4']
-
-for i, ast in enumerate(asset_classes):
-    vals = np.array([
-        cum_res[f'累積配分_{ast}'] * 100,
-        cum_res[f'累積銘柄_{ast}'] * 100,
-        cum_res[f'累積売買_{ast}'] * 100,
-        cum_res[f'累積コスト_{ast}'] * 100,
-        cum_res[f'累積誤差_{ast}'] * 100
-    ])
+        pd.DataFrame({
+            'Bucket': BUCKET_ORDER,
+            'Current_Yield': [0.5, 0.8, 1.3, 1.8, 2.5]
+        }).to_excel(writer, sheet_name='Market_Data', index=False)
+        
+        pd.DataFrame({'Strategy_Name': ['Excelカスタムテスト', 'Excelカスタムテスト'], 'Bucket': ['残存1-3年', '残存10年超'], 'Swap_Volume': [150, 250]}).to_excel(writer, sheet_name='Strategies', index=False)
+        
+        scens = []
+        for sc in SCENARIO_PROBS.keys():
+            for d, b_name in zip([2.0, 4.0, 6.0, 8.5, 12.0], BUCKET_ORDER):
+                scens.append({'Scenario_Name': sc, 'Bucket': b_name, 'Year1_Shift': get_unified_ys(sc, 0, b_name, d), 'Year2_Shift': get_unified_ys(sc, 1, b_name, d), 'Year3_Shift': get_unified_ys(sc, 2, b_name, d), 'Year4_Shift': get_unified_ys(sc, 3, b_name, d), 'Year5_Shift': get_unified_ys(sc, 4, b_name, d)})
+        pd.DataFrame(scens).to_excel(writer, sheet_name='Scenarios', index=False)
+    return output.getvalue()
+def export_results_excel(paths, strategy_df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        strategy_df.to_excel(writer, sheet_name='Optimal_Strategy', index=False)
+        res_data = []
+        for sc_name, path in paths.items():
+            row = {'Scenario': sc_name}
+            for t in range(len(path)): row[f'Year {t}'] = path[t]
+            row['Total Flow(1-5)'] = sum(path[1:]) if len(path) > 1 else 0.0
+            res_data.append(row)
+        pd.DataFrame(res_data).to_excel(writer, sheet_name='NII_Paths', index=False)
+    return output.getvalue()
+# ==========================================
+# 4. Global UI & Data Parsing
+# ==========================================
+with st.sidebar:
+    st.title("📂 データ入力 & 設定")
+    st.subheader("1. データインポート")
+    st.download_button("サンプルデータ出力 (Excel)", data=get_sample_excel(), file_name="sample_data.xlsx")
     
-    pos_vals = np.maximum(vals, 0)
-    neg_vals = np.minimum(vals, 0)
+    uploaded_file = st.file_uploader("ポートフォリオExcelをアップロード", type=["xlsx", "xls"])
+    df_strategies = df_scenarios = None
     
-    color = colors_palette[i % len(colors_palette)]
-    ax4.bar(x, pos_vals, width, bottom=pos_bottom, color=color, edgecolor='white', alpha=0.5, label=ast)
-    ax4.bar(x, neg_vals, width, bottom=neg_bottom, color=color, edgecolor='white', alpha=0.7)
+    df = pd.DataFrame({'Item_Name': ['Bond 1-3A', 'Bond 1-3B (不可)', 'Bond 3-5', 'Bond 5-7', 'Bond 7-10', 'Bond 10+'], 'Book_Value': [40, 20, 60, 60, 60, 60], 'Market_Value': [38, 19, 56, 54, 52, 50], 'Coupon': [0.05, 0.05, 0.08, 0.2, 0.25, 0.4], 'Duration': [2.0, 2.0, 4.0, 6.0, 8.5, 12.0], 'Swap_Eligible': [1, 0, 1, 1, 1, 1]})
+    df_mkt = pd.DataFrame({'Bucket': ['残存1-3年', '残存3-5年', '残存5-7年', '残存7-10年', '残存10年超'], 'Current_Yield': [0.5, 0.8, 1.3, 1.8, 2.5]})
+    df_strategies = pd.DataFrame({'Strategy_Name': ['Excelカスタムテスト', 'Excelカスタムテスト'], 'Bucket': ['残存1-3年', '残存10年超'], 'Swap_Volume': [15, 25]})
+    if uploaded_file:
+        try:
+            df_temp = pd.read_excel(uploaded_file, sheet_name='Portfolio')
+            if not df_temp.empty: df = df_temp
+            for name, target_var in [('Strategies', 'df_strategies'), ('Scenarios', 'df_scenarios'), ('Market_Data', 'df_mkt')]:
+                try: locals()[target_var] = pd.read_excel(uploaded_file, sheet_name=name)
+                except: pass
+        except Exception as e: st.error(f"読込エラー: {e}")
+    df['Bucket'] = df['Duration'].apply(get_bucket)
+    df = df.merge(df_mkt[['Bucket', 'Current_Yield']], on='Bucket', how='left')
+    df['Current_Yield'] = df['Current_Yield'].fillna(0.0)
+    df['Realized_Loss'] = df['Book_Value'] - df['Market_Value']
+    st.markdown("---")
+    st.subheader("2. グローバル設定")
+    budget = st.number_input("💰 実現損の許容枠 (億円)", value=200.0)
+    base_cost = st.number_input("基準となる資金調達コスト (%)", value=0.50)
+    deposit_beta = st.number_input("預金β (短期金利への連動率)", value=0.30)
+st.title("債券ポートフォリオ最適化 シミュレータ")
+with st.expander("📊 現在の個別銘柄データを確認", expanded=False):
+    st.dataframe(df.style.format({'Book_Value': '{:.0f}', 'Market_Value': '{:.0f}', 'Realized_Loss': '{:.1f}', 'Coupon': '{:.2f}%', 'Current_Yield': '{:.2f}%', 'Duration': '{:.1f}年'}), use_container_width=True)
+tabA, tabB, tabC = st.tabs(["Phase A: 手動シミュレーション", "Phase B: 限定的シミュレーション", "Phase C: 全天候型（ロバスト）シミュレーション"])
+# ==========================================
+# Phase A
+# ==========================================
+with tabA:
+    st.subheader("1. 表示シナリオ選択")
+    all_scen = list(SCENARIO_PROBS.keys())
+    if df_scenarios is not None and not df_scenarios.empty: all_scen += [s for s in df_scenarios['Scenario_Name'].unique() if s not in all_scen]
+    selected_scenarios = st.multiselect("NII推移を描画するシナリオを選択", all_scen, default=[SCENARIO_NAMES['Up'], SCENARIO_NAMES['Down']])
+    st.markdown("---")
+    col_set, col_res = st.columns([1, 2])
+    with col_set:
+        st.subheader("2. 戦略(入替額)設定")
+        strat_opts = ["カスタム戦略 (手動スライダー入力)"] + DYNAMIC_STRATS
+        if df_strategies is not None and not df_strategies.empty: strat_opts = list(df_strategies['Strategy_Name'].unique()) + strat_opts
+        selected_strat = st.selectbox("戦略テンプレートの適用", strat_opts)
+        
+        swap_volumes = np.zeros(len(df))
+        is_custom = (selected_strat == "カスタム戦略 (手動スライダー入力)")
+        
+        for b_name in BUCKET_ORDER:
+            b_items = df[(df['Bucket'] == b_name) & (df['Swap_Eligible'] == 1)]
+            max_val = float(b_items['Book_Value'].sum())
+            def_val = 0.0
+            if not is_custom:
+                pre_vols = get_strategy_volumes(df, df_strategies, selected_strat, budget)
+                def_val = min(max_val, pre_vols[b_items.index].sum())
+            
+            val = st.slider(f"{b_name} (入替上限: {max_val:.0f})", min_value=0.0, max_value=max_val, value=def_val) if max_val > 0 else 0.0
+            if max_val > 0.0:
+                ratio = val / max_val
+                for idx in b_items.index: swap_volumes[idx] = ratio * b_items.at[idx, 'Book_Value']
+            
+        used_budget = np.sum(swap_volumes * (df['Realized_Loss'].values / df['Book_Value'].values))
+        st.markdown(f"**見込みの実現損:** <span style='color:red;font-size:1.5em'>{used_budget:.1f} 億円</span>", unsafe_allow_html=True)
+        if used_budget > budget: st.error("⚠️ 予算を超過しています。")
+    with col_res:
+        if len(selected_scenarios) > 0:
+            YS_t, sys_t = build_ys_tensor(df, selected_scenarios, df_scenarios)
+            W_t = swap_volumes / df['Book_Value'].values
+            paths = calc_nii_paths_vectorized(W_t, df, selected_scenarios, YS_t, base_cost, deposit_beta, sys_t, True)
+            
+            fig = go.Figure()
+            years = [0, 1, 2, 3, 4, 5]
+            for sc_name in selected_scenarios: fig.add_trace(go.Scatter(x=years, y=paths[sc_name], mode='lines+markers', name=sc_name, line=dict(width=3)))
+            fig.update_layout(title="選択シナリオにおけるNII推移", xaxis_title='経過年数 (0年は現在=Day-0 NII)', yaxis_title='単年度 NII (億円)', template='plotly_white', hovermode='x unified')
+            st.plotly_chart(fig, use_container_width=True)
+            
+            pt_data = []
+            for sc_name in selected_scenarios:
+                p_row = {'シナリオ': sc_name}
+                for t in range(6): p_row[f'Year {t}'] = paths[sc_name][t]
+                pt_data.append(p_row)
+            st.dataframe(pd.DataFrame(pt_data).style.format({f'Year {t}': '{:.1f}' for t in range(6)}), use_container_width=True)
+            res_strat_a = df[['Item_Name', 'Bucket']].copy(); res_strat_a['Swap_Volume'] = swap_volumes
+            st.download_button("結果をExcelでDL", data=export_results_excel(paths, res_strat_a), file_name="PhaseA_results.xlsx")
+    st.markdown("---")
+    st.markdown("#### 3. 表示中の金利シナリオ詳細（イールドカーブ遷移）")
+    if len(selected_scenarios) > 0:
+        cols_c = min(3, len(selected_scenarios))
+        rows_c = (len(selected_scenarios) + 2) // 3
+        fig_scen = make_subplots(rows=rows_c, cols=cols_c, subplot_titles=selected_scenarios, vertical_spacing=0.15)
+        
+        inline_scen_data = []
+        for sc_idx, sc in enumerate(selected_scenarios):
+            r = (sc_idx // cols_c) + 1; c = (sc_idx % cols_c) + 1
+            for t in range(5):
+                shifts = []; b_names_plot = []
+                for b_name in BUCKET_ORDER:
+                    subset = df[df['Bucket'] == b_name]
+                    d_proxy = subset['Duration'].mean() if not subset.empty else get_bucket_d_proxy(b_name)
+                    ys = get_unified_ys(sc, t, b_name, d_proxy, df_scenarios)
+                    shifts.append(ys); b_names_plot.append(b_name)
+                fig_scen.add_trace(go.Scatter(x=b_names_plot, y=shifts, mode='lines+markers', name=f"Year {t+1}", showlegend=(sc_idx==0)), row=r, col=c)
+                row_data = {'シナリオ名': sc, 'Year': t+1}
+                for b, ys_val in zip(b_names_plot, shifts): row_data[b] = f"{ys_val:+.2f}%"
+                inline_scen_data.append(row_data)
+        fig_scen.update_layout(height=250 + 200*rows_c, template='plotly_white', hovermode='x unified')
+        st.plotly_chart(fig_scen, use_container_width=True)
+        with st.expander("数値の推移表（イールドカーブ詳細データ）"): st.table(pd.DataFrame(inline_scen_data))
+# ==========================================
+# Phase B
+# ==========================================
+with tabB:
+    st.subheader("1. 金利シナリオとシミュレーション設定")
+    active_scen_name = st.selectbox("対象シナリオ（内蔵・カスタム全て）", all_scen, index=1)
+    st.markdown("---")
     
-    pos_bottom += pos_vals
-    neg_bottom += neg_vals
-
-ax4.set_xticks(x)
-ax4.set_xticklabels(factors, fontsize=12)
-ax4.tick_params(axis='y', labelsize=12)
-ax4.set_title('④ 各行動要因の資産区分別内訳（8資産）', fontsize=16, fontweight='bold')
-ax4.set_ylabel('寄与度 (%)', fontsize=14)
-ax4.axhline(0, color='black', linewidth=0.8)
-
-# ④に要因別の合計値（ネット寄与度）を黒い点でプロットし、データラベルをプロットの上下に配置
-totals = np.array([cum_res[f'累積行動_{f}'] * 100 for f in factors])
-ax4.plot(x, totals, marker='o', color='black', linestyle='None', markersize=6, zorder=5, label='合計')
-
-for i, tot in enumerate(totals):
-    # annotateを使用して、プロットした点の少し上（プラス）か少し下（マイナス）にラベルを表示
-    ax4.annotate(f"{tot:+.2f}%", (x[i], tot), textcoords="offset points", xytext=(0, 10 if tot >= 0 else -15), ha='center', fontweight='bold', color='black', fontsize=12)
-
-handles, labels = ax4.get_legend_handles_labels()
-# プロットした「合計」が凡例の上部にくるよう調整
-ax4.legend(handles[::-1], labels[::-1], loc='upper right', bbox_to_anchor=(1.15, 1), fontsize=12)
-
-plt.tight_layout()
-plt.show()
-
-# --- グラフ群2：時系列推移（⑤～⑦） ---
-fig_ts, (ax_ts1, ax_ts2, ax_ts3) = plt.subplots(3, 1, figsize=(12, 15), gridspec_kw={'height_ratios': [1, 1, 1.2]})
-plt.subplots_adjust(hspace=0.4)
-x_labels = df_results['年月']
-
-cum_A_series = (1 + df_results['目標(A)']).cumprod() - 1
-cum_B_series = (1 + df_results['実績(B)']).cumprod() - 1
-cum_diff = cum_B_series - cum_A_series
-
-ax_ts1.plot(x_labels, cum_B_series * 100, marker='o', color='navy', label='累積実績 (B)', linewidth=2)
-ax_ts1.plot(x_labels, cum_A_series * 100, marker='s', color='gray', label='累積目標 (A)', linewidth=2, linestyle='--')
-colors_diff_cum = ['lightgreen' if x >= 0 else 'salmon' for x in cum_diff]
-ax_ts1.bar(x_labels, cum_diff * 100, alpha=0.5, color=colors_diff_cum, label='累積目標超過 (B-A)')
-ax_ts1.axhline(0, color='black', linewidth=1)
-ax_ts1.set_title('⑤ 累積リターンの推移と目標超過額 (実績 vs 目標)', fontsize=15, fontweight='bold')
-ax_ts1.legend(loc='upper left')
-
-# データラベルを 実績(B) に変更し、色をネイビーに
-for i, val in enumerate(cum_B_series):
-    ax_ts1.annotate(f"{val*100:+.2f}%", (x_labels.iloc[i], val*100), textcoords="offset points", xytext=(0,10 if val>=0 else -15), ha='center', fontsize=10, fontweight='bold', color='navy')
-
-m_diff = df_results['実績(B)'] - df_results['目標(A)']
-ax_ts2.plot(x_labels, df_results['実績(B)'] * 100, marker='o', color='navy', label='月次実績 (B)', linewidth=2)
-ax_ts2.plot(x_labels, df_results['目標(A)'] * 100, marker='s', color='gray', label='月次目標 (A)', linewidth=2, linestyle='--')
-colors_diff_m = ['lightgreen' if x >= 0 else 'salmon' for x in m_diff]
-ax_ts2.bar(x_labels, m_diff * 100, alpha=0.5, color=colors_diff_m, label='月次目標超過 (B-A)')
-ax_ts2.axhline(0, color='black', linewidth=1)
-ax_ts2.set_title('⑥ 月次リターンの推移と目標超過額 (実績 vs 目標)', fontsize=15, fontweight='bold')
-ax_ts2.legend(loc='upper left')
-
-# データラベルを 実績(B) に変更し、色をネイビーに
-for i, val in enumerate(df_results['実績(B)']):
-    ax_ts2.annotate(f"{val*100:+.2f}%", (x_labels.iloc[i], val*100), textcoords="offset points", xytext=(0,10 if val>=0 else -15), ha='center', fontsize=10, fontweight='bold', color='navy')
-
-env_series = df_results['マクロ環境(C-A)'] * 100
-skill_series = df_results['行動(B-C)'] * 100
-total_excess = (df_results['実績(B)'] - df_results['目標(A)']) * 100
-ax_ts3.bar(x_labels, env_series, label='環境要因 (C-A)', color='skyblue', edgecolor='white')
-ax_ts3.bar(x_labels, np.maximum(skill_series, 0), bottom=np.maximum(env_series, 0), label='行動要因 (B-C) プラス', color='lightgreen', edgecolor='white')
-ax_ts3.bar(x_labels, np.minimum(skill_series, 0), bottom=np.minimum(env_series, 0), label='行動要因 (B-C) マイナス', color='salmon', edgecolor='white')
-
-# ⑦に月次目標超過(B-A)をプロットとして追加（凡例用・線なし・サイズ6）
-ax_ts3.plot(x_labels, total_excess, marker='o', color='black', linestyle='None', label='月次目標超過 (B-A)', markersize=6, zorder=5)
-
-ax_ts3.axhline(0, color='black', linewidth=1)
-ax_ts3.set_title('⑦ 【月次】目標超過(B-A)の要因分解推移（内訳のみ）', fontsize=15, fontweight='bold')
-ax_ts3.legend(loc='upper left')
-
-# ⑦のデータラベルは今まで通り超過リターンを黒字で出力
-for i, val in enumerate(total_excess):
-    ax_ts3.annotate(f"{val:+.2f}%", (x_labels.iloc[i], val), textcoords="offset points", xytext=(0,10 if val>=0 else -15), ha='center', fontweight='bold', color='black')
-
-plt.tight_layout()
-plt.show()
-
-# =========================================================
-# 5. エクセルファイルへの自動出力（分析結果）
-# =========================================================
-print("\n=== Excelファイルへの出力処理を開始します ===")
-output_file = 'Performance_Attribution_Result.xlsx'
-
-with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
-    df_macro.to_excel(writer, sheet_name='1_Input_マクロ指標', index=False)
-    df_master.to_excel(writer, sheet_name='1_Input_銘柄マスタ', index=False)
-    df_bm_attr.to_excel(writer, sheet_name='1_Input_BM設定', index=False)
-    df_holdings.to_excel(writer, sheet_name='1_Input_月末残高', index=False)
-    df_transactions.to_excel(writer, sheet_name='1_Input_期中取引', index=False)
-    
-    df_results.to_excel(writer, sheet_name='2_Calc_月次要因分解', index=False)
-    df_cum_res = pd.DataFrame([cum_res]).T.reset_index()
-    df_cum_res.columns = ['項目', '値']
-    df_cum_res.to_excel(writer, sheet_name='2_Calc_累積要因分解', index=False)
-    
-    df_graph_ts = df_results[['年月', '目標(A)', '実績(B)', 'マクロ環境(C-A)', '行動(B-C)']].copy()
-    df_graph_ts['月次_超過(B-A)'] = df_graph_ts['実績(B)'] - df_graph_ts['目標(A)']
-    df_graph_ts['累積_目標(A)'] = (1 + df_graph_ts['目標(A)']).cumprod() - 1
-    df_graph_ts['累積_実績(B)'] = (1 + df_graph_ts['実績(B)']).cumprod() - 1
-    df_graph_ts['累積_超過(B-A)'] = df_graph_ts['累積_実績(B)'] - df_graph_ts['累積_目標(A)']
-    
-    base_cols = ['環境_金利', '環境_株式等', '環境_誤差', '環境_目標控除', '行動_配分', '行動_銘柄', '行動_売買', '行動_コスト', '行動_誤差']
-    df_graph_ts = pd.concat([df_graph_ts, df_results[base_cols]], axis=1)
-    
-    asset_cols = [c for c in df_results.columns if any(c.startswith(prefix) for prefix in ['配分_', '銘柄_', '売買_', 'コスト_', '誤差_'])]
-    df_graph_ts = pd.concat([df_graph_ts, df_results[asset_cols]], axis=1)
-    
-    df_graph_ts.to_excel(writer, sheet_name='3_Result_グラフ用データ', index=False)
-    
-    workbook  = writer.book
-    pct_fmt = workbook.add_format({'num_format': '0.00%'})
-    
-    for sheet_name in writer.sheets:
-        worksheet = writer.sheets[sheet_name]
-        if sheet_name.startswith('2_') or sheet_name.startswith('3_'):
-            worksheet.set_column('B:AZ', 12, pct_fmt)
-        elif sheet_name == '1_Input_マクロ指標':
-            worksheet.set_column('B:Z', 12, pct_fmt)
-
-print(f"分析結果Excelファイル '{output_file}' を出力しました。")
-
-
-# =========================================================
-# 6. 将来の目標達成確率シミュレーション（本格的共分散モデル）
-# =========================================================
-print("\n=== 将来シミュレーション（目標達成確率）の生成を開始します ===")
-
-past_months = 12
-future_months = 24
-total_months = past_months + future_months
-
-past_B_cum = (1 + df_results['実績(B)']).cumprod().values[-1] - 1
-past_A_cum = (1 + df_results['目標(A)']).cumprod().values[-1] - 1
-
-# ---------------------------------------------------------
-# (A) 将来の政策金利パスと目標リターンの設定
-# ---------------------------------------------------------
-# 2026年3月末(現在):0.75%
-# 2026年6月末(+3ヶ月後):1.00%, 2026年12月末(+9ヶ月後):1.25%, 2027年6月末(+15ヶ月後):1.50%
-future_policy_rates = []
-current_pr = 0.0075
-for i in range(1, future_months + 1):
-    if i == 3:  current_pr = 0.0100  # 2026年6月末 (15ヶ月目)
-    if i == 9:  current_pr = 0.0125  # 2026年12月末 (21ヶ月目)
-    if i == 15: current_pr = 0.0150  # 2027年6月末 (27ヶ月目)
-    future_policy_rates.append(current_pr)
-
-# 月次目標リターン = (政策金利 + 80bps) / 12
-future_A_returns = [(pr + 0.0080) / 12 for pr in future_policy_rates]
-future_A_cum_path = [past_A_cum]
-current_A_cum = past_A_cum
-for ret in future_A_returns:
-    current_A_cum = (1 + current_A_cum) * (1 + ret) - 1
-    future_A_cum_path.append(current_A_cum)
-
-# ---------------------------------------------------------
-# (B) 各資産クラスの前提条件（期待リターン・ボラティリティ・相関行列）
-# ---------------------------------------------------------
-asset_assumptions = pd.DataFrame([
-    {'資産区分': '内債_固定',    'mu': -0.015, 'vol': 0.030}, # 金利上昇で価格下落
-    {'資産区分': '内債_変動',    'mu': 0.015,  'vol': 0.010}, # 金利上昇に追随
-    {'資産区分': '外債H有_固定', 'mu': 0.005,  'vol': 0.040},
-    {'資産区分': '外債H有_変動', 'mu': 0.025,  'vol': 0.020},
-    {'資産区分': '外債Hなし',    'mu': 0.035,  'vol': 0.100},
-    {'資産区分': '内株',         'mu': 0.060,  'vol': 0.150},
-    {'資産区分': 'J-REIT',       'mu': 0.050,  'vol': 0.120},
-    {'資産区分': '投信',         'mu': 0.040,  'vol': 0.080}
-]).set_index('資産区分')
-
-corr_matrix = pd.DataFrame(
-    [[ 1.0,  0.8,  0.6,  0.4,  0.2, -0.1,  0.1,  0.3],
-     [ 0.8,  1.0,  0.5,  0.6,  0.2, -0.1,  0.1,  0.3],
-     [ 0.6,  0.5,  1.0,  0.8,  0.4, -0.2,  0.0,  0.2],
-     [ 0.4,  0.6,  0.8,  1.0,  0.4, -0.2,  0.0,  0.2],
-     [ 0.2,  0.2,  0.4,  0.4,  1.0,  0.4,  0.3,  0.5],
-     [-0.1, -0.1, -0.2, -0.2,  0.4,  1.0,  0.6,  0.8],
-     [ 0.1,  0.1,  0.0,  0.0,  0.3,  0.6,  1.0,  0.6],
-     [ 0.3,  0.3,  0.2,  0.2,  0.5,  0.8,  0.6,  1.0]],
-    index=asset_classes, columns=asset_classes
-)
-
-# ---------------------------------------------------------
-# (C) 将来の行動シナリオ（ポートフォリオ・トランジション）
-# ---------------------------------------------------------
-w_base_dict = {'内債_固定': 0.30, '内債_変動': 0.10, '外債H有_固定': 0.10, '外債H有_変動': 0.05, '外債Hなし': 0.05, '内株': 0.15, 'J-REIT': 0.05, '投信': 0.20}
-w_base = np.array([w_base_dict[ast] for ast in asset_classes])
-
-w_act_dict = {'内債_固定': 0.15, '内債_変動': 0.20, '外債H有_固定': 0.10, '外債H有_変動': 0.05, '外債Hなし': 0.05, '内株': 0.20, 'J-REIT': 0.05, '投信': 0.20}
-w_act = np.array([w_act_dict[ast] for ast in asset_classes])
-transition_months = 12
-
-# ---------------------------------------------------------
-# (D) モンテカルロ・シミュレーションの実行（同一相場環境下での比較）
-# ---------------------------------------------------------
-n_sims = 5000
-np.random.seed(42)
-
-L = np.linalg.cholesky(corr_matrix.values)
-
-mu_assets_m = asset_assumptions['mu'].values / 12
-vol_assets_m = asset_assumptions['vol'].values / np.sqrt(12)
-
-cum_sim_base = np.zeros((n_sims, future_months + 1))
-cum_sim_base[:, 0] = past_B_cum
-cum_sim_act = np.zeros((n_sims, future_months + 1))
-cum_sim_act[:, 0] = past_B_cum
-
-for i in range(1, future_months + 1):
-    Z_uncorr = np.random.normal(0, 1, (len(asset_classes), n_sims))
-    Z_corr = np.dot(L, Z_uncorr)
-    
-    asset_ret_sim = mu_assets_m[:, np.newaxis] + vol_assets_m[:, np.newaxis] * Z_corr
-    
-    progress = min(i / transition_months, 1.0)
-    w_t = w_base + (w_act - w_base) * progress
-    
-    port_ret_base = np.dot(w_base, asset_ret_sim)
-    port_ret_act = np.dot(w_t, asset_ret_sim)
-    
-    cum_sim_base[:, i] = (1 + cum_sim_base[:, i-1]) * (1 + port_ret_base) - 1
-    cum_sim_act[:, i] = (1 + cum_sim_act[:, i-1]) * (1 + port_ret_act) - 1
-
-target_final = future_A_cum_path[-1]
-prob_base = np.sum(cum_sim_base[:, -1] >= target_final) / n_sims
-prob_act = np.sum(cum_sim_act[:, -1] >= target_final) / n_sims
-
-# ---------------------------------------------------------
-# (E) グラフ描画（X軸を日付化、利上げマーカー追加）
-# ---------------------------------------------------------
-fig_sim, ax_sim = plt.subplots(figsize=(12, 7))
-
-# freq='M' から freq='ME' へ修正
-sim_dates = pd.date_range(start='2025-03-31', periods=total_months + 1, freq='ME')
-x_past = sim_dates[:past_months + 1]
-x_future = sim_dates[past_months:]
-
-past_A_path = np.concatenate(([0], (1 + df_results['目標(A)']).cumprod().values - 1))
-past_B_path = np.concatenate(([0], (1 + df_results['実績(B)']).cumprod().values - 1))
-
-ax_sim.plot(x_past, past_A_path * 100, color='gray', linestyle='--', linewidth=2, label='過去の累積目標(A)')
-ax_sim.plot(x_past, past_B_path * 100, color='navy', linewidth=2, marker='o', label='過去の累積実績(B)')
-ax_sim.plot(x_future, np.array(future_A_cum_path) * 100, color='black', linestyle='--', linewidth=2, label='将来の目標累積パス')
-
-# 利上げタイミングのマーカー追加 (3ヶ月後:2026/06, 9ヶ月後:2026/12, 15ヶ月後:2027/06)
-hike_idx = [3, 9, 15]
-hike_dates = [x_future[i] for i in hike_idx]
-hike_vals = [future_A_cum_path[i] * 100 for i in hike_idx]
-ax_sim.scatter(hike_dates, hike_vals, color='red', marker='^', s=150, zorder=5, label='利上げ想定タイミング')
-
-# ファンチャート(現状)
-p10_base = np.percentile(cum_sim_base, 10, axis=0) * 100
-p90_base = np.percentile(cum_sim_base, 90, axis=0) * 100
-p50_base = np.percentile(cum_sim_base, 50, axis=0) * 100
-ax_sim.fill_between(x_future, p10_base, p90_base, color='lightsteelblue', alpha=0.4, label='現状維持 80%確率区間')
-ax_sim.plot(x_future, p50_base, color='royalblue', linestyle=':', linewidth=2, label='現状維持 中央値')
-
-# ファンチャート(行動後)
-p10_act = np.percentile(cum_sim_act, 10, axis=0) * 100
-p90_act = np.percentile(cum_sim_act, 90, axis=0) * 100
-p50_act = np.percentile(cum_sim_act, 50, axis=0) * 100
-ax_sim.fill_between(x_future, p10_act, p90_act, color='lightgreen', alpha=0.5, label='行動後 80%確率区間')
-ax_sim.plot(x_future, p50_act, color='forestgreen', linestyle='-', linewidth=2, label='行動後 中央値')
-
-# X軸のフォーマット (日付表示)
-ax_sim.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-plt.setp(ax_sim.xaxis.get_majorticklabels(), rotation=45, ha='right')
-
-# メッセージボックス
-textstr = (
-    f"【3年後の目標達成確率】\n"
-    f"・現状維持 : {prob_base*100:.1f}%\n"
-    f"・行動後  : {prob_act*100:.1f}%"
-    # f"《シミュレーションの戦略前提》\n"
-    # f"政策金利は2026年6月・12月、2027年6月に25bpsの利上げを想定。\n"
-    # f"金利上昇による固定債の価格下落リスクを回避するため、\n"
-    # f"「内債_固定」を15%削減し、「内債_変動(+10%)」と\n"
-    # f"「内株(+5%)」へ、今後12ヶ月かけて段階的にシフト。"
-)
-props = dict(boxstyle='round', facecolor='wheat', alpha=0.9, edgecolor='gray')
-ax_sim.text(0.5, 0.95, textstr, transform=ax_sim.transAxes, fontsize=12, verticalalignment='top', bbox=props, fontweight='bold')
-
-# 過去と未来の境界線
-ax_sim.axvline(sim_dates[past_months], color='red', linestyle='-', alpha=0.7)
-ax_sim.text(sim_dates[past_months] + pd.Timedelta(days=10), ax_sim.get_ylim()[0] + 0.5, '現在 (1年経過)', color='red', rotation=90, verticalalignment='bottom', fontweight='bold', fontsize=12)
-
-ax_sim.set_title('⑧ 将来シミュレーション：戦略的行動による「目標達成確率」の変化', fontsize=16, fontweight='bold')
-ax_sim.set_xlabel('年月', fontsize=14)
-ax_sim.set_ylabel('累積リターン (%)', fontsize=14)
-ax_sim.tick_params(axis='both', which='major', labelsize=12)
-
-ax_sim.legend(loc='upper left', fontsize=11)
-
-plt.tight_layout()
-plt.show()
-
-# =========================================================
-# 7. シミュレーション用 Excelファイルへの自動出力
-# =========================================================
-print("\n=== シミュレーション結果Excelファイルへの出力処理を開始します ===")
-sim_output_file = 'Simulation_Result.xlsx'
-
-with pd.ExcelWriter(sim_output_file, engine='xlsxwriter') as writer:
-    # 1. 政策金利・目標設定パス
-    future_months_labels = [(pd.to_datetime('2026-03-31') + pd.DateOffset(months=i)).strftime('%Y-%m') for i in range(1, future_months + 1)]
-    df_sim_target = pd.DataFrame({
-        '経過月数': range(13, 37),
-        '年月': future_months_labels,
-        '政策金利': future_policy_rates,
-        '目標リターン_月次': future_A_returns,
-        '累積目標パス_A': future_A_cum_path[1:]
-    })
-    df_sim_target.to_excel(writer, sheet_name='1_Target_Path', index=False)
-
-    # 2. 資産ごとのリスク・リターン前提
-    asset_assumptions.reset_index().to_excel(writer, sheet_name='2_Asset_Assumptions', index=False)
-    
-    # 3. 相関行列
-    corr_matrix.reset_index().rename(columns={'index': '資産区分'}).to_excel(writer, sheet_name='3_Correlation_Matrix', index=False)
-    
-    # 4. 行動の前提（ウェイト変化）
-    df_weights = pd.DataFrame({
-        '資産区分': asset_classes,
-        '現状維持_Weight': w_base,
-        '行動後(目標)_Weight': w_act
-    })
-    df_weights.to_excel(writer, sheet_name='4_Weights', index=False)
-
-    # 5. シミュレーションサマリー（確率とパーセンタイル）
-    df_sim_summary = pd.DataFrame({
-        'シナリオ': ['現状維持(Do Nothing)', '行動後(Action)'],
-        '目標達成確率': [prob_base, prob_act],
-        '3年後リターン_10%ile (悲観)': [p10_base[-1]/100, p10_act[-1]/100],
-        '3年後リターン_50%ile (中位)': [p50_base[-1]/100, p50_act[-1]/100],
-        '3年後リターン_90%ile (楽観)': [p90_base[-1]/100, p90_act[-1]/100],
-    })
-    df_sim_summary.to_excel(writer, sheet_name='5_Summary', index=False)
-
-    # 6. シミュレーション全パス出力（各シナリオ 先頭1000パスを書き出し）
-    save_paths = 1000
-    df_paths_base = pd.DataFrame(cum_sim_base[:save_paths, 1:], columns=future_months_labels)
-    df_paths_base.insert(0, 'Path_ID', range(1, save_paths + 1))
-    df_paths_base.to_excel(writer, sheet_name='6_Paths_Base', index=False)
-
-    df_paths_act = pd.DataFrame(cum_sim_act[:save_paths, 1:], columns=future_months_labels)
-    df_paths_act.insert(0, 'Path_ID', range(1, save_paths + 1))
-    df_paths_act.to_excel(writer, sheet_name='7_Paths_Act', index=False)
-
-    # 書式設定
-    workbook  = writer.book
-    pct_fmt = workbook.add_format({'num_format': '0.00%'})
-    for sheet_name in writer.sheets:
-        worksheet = writer.sheets[sheet_name]
-        if sheet_name == '1_Target_Path':
-            worksheet.set_column('C:E', 12, pct_fmt)
-        elif sheet_name == '2_Asset_Assumptions':
-            worksheet.set_column('B:C', 12, pct_fmt)
-        elif sheet_name == '4_Weights':
-            worksheet.set_column('B:C', 12, pct_fmt)
-        elif sheet_name == '5_Summary':
-            worksheet.set_column('B:E', 15, pct_fmt)
-        elif sheet_name in ['6_Paths_Base', '7_Paths_Act']:
-            worksheet.set_column('B:Y', 10, pct_fmt)
-
-print(f"シミュレーション結果Excelファイル '{sim_output_file}' を出力しました。")
-print("入力設定、相関行列、および乱数パスの生データが格納されています。")
+    if active_scen_name:
+        YS_tb, sys_tb = build_ys_tensor(df, [active_scen_name], df_scenarios)
+        opt_vols_b = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, [active_scen_name], YS_tb, sys_tb, obj_mode="Mean")
+        
+        W_opt_b = opt_vols_b / df['Book_Value'].values
+        pA = calc_nii_paths_vectorized(W_opt_b, df, [active_scen_name], YS_tb, base_cost, deposit_beta, sys_tb, False)[active_scen_name]
+        opt_paths_cum = [0.0] + list(np.cumsum(pA))
+        
+        st.subheader("2. 導出された最適入替戦略（バケット集計）")
+        res_df = df.copy(); res_df['Swap'] = opt_vols_b
+        res_df['Keep_Locked'] = np.where(res_df['Swap_Eligible'] == 0, res_df['Book_Value'], 0)
+        res_df['Keep_Eligible'] = np.where(res_df['Swap_Eligible'] == 1, res_df['Book_Value'] - res_df['Swap'], 0)
+        
+        b_agg = res_df.groupby('Bucket')[['Keep_Locked', 'Keep_Eligible', 'Swap']].sum().reindex(BUCKET_ORDER).fillna(0).reset_index()
+        fig_bar = go.Figure(data=[
+            go.Bar(name='入替不可 (固定)', x=b_agg['Bucket'], y=b_agg['Keep_Locked'], marker_color='darkgray', texttemplate='%{y:.0f}'),
+            go.Bar(name='残存 (対象だがKeep)', x=b_agg['Bucket'], y=b_agg['Keep_Eligible'], marker_color='rgb(55, 83, 109)', texttemplate='%{y:.0f}'),
+            go.Bar(name='入替額 (Swap)', x=b_agg['Bucket'], y=b_agg['Swap'], marker_color='rgb(219, 64, 82)', texttemplate='%{y:.0f}')
+        ])
+        fig_bar.update_layout(barmode='stack', title=f"最適化後のバケット構成 ({active_scen_name}特化)", template='plotly_white')
+        st.plotly_chart(fig_bar, use_container_width=True)
+        
+        loss_opt = np.sum(opt_vols_b * (df['Realized_Loss'].values / df['Book_Value'].values))
+        st.markdown(f"**■ 使用想定実現損（初期予算）:** <span style='font-size:1.3em;color:crimson'>{loss_opt:.1f}億円</span>", unsafe_allow_html=True)
+        st.markdown("---")
+        
+        st.subheader(f"3. 戦略間のNII推移と累積効果の比較（{active_scen_name}下での検証）")
+        all_opts_b = ["現状維持 (すべて0)"] + DYNAMIC_STRATS
+        if df_strategies is not None and not df_strategies.empty: all_opts_b += list(df_strategies['Strategy_Name'].unique())
+        comp_strats = st.multiselect("比較対象の戦略を選択 (複数可)", all_opts_b, default=all_opts_b[:4])
+        
+        comp_data = []
+        fig_paths_b = go.Figure()
+        years = [0, 1, 2, 3, 4, 5]
+        
+        for st_name in comp_strats:
+            sv = get_strategy_volumes(df, df_strategies, st_name, budget)
+            loss = np.sum(sv * (df['Realized_Loss'].values / df['Book_Value'].values))
+            W_t = sv / df['Book_Value'].values
+            p_anu = calc_nii_paths_vectorized(W_t, df, [active_scen_name], YS_tb, base_cost, deposit_beta, sys_tb, False)[active_scen_name]
+            p_cum = [0.0] + list(np.cumsum(p_anu))
+            comp_data.append({'戦略名': st_name, '見込み実現損(億円)': float(np.round(loss, 1)), '1年累積NII(億円)': p_cum[1], '3年累積NII(億円)': p_cum[3], '5年累積NII(億円)': p_cum[5]})
+            fig_paths_b.add_trace(go.Scatter(x=years, y=p_cum, mode='lines+markers', name=st_name, line=dict(dash='dash')))
+            
+        comp_data.append({'戦略名': '最適化戦略', '見込み実現損(億円)': float(np.round(loss_opt, 1)), '1年累積NII(億円)': opt_paths_cum[1], '3年累積NII(億円)': opt_paths_cum[3], '5年累積NII(億円)': opt_paths_cum[5]})
+        fig_paths_b.add_trace(go.Scatter(x=years, y=opt_paths_cum, mode='lines+markers', name='最適化戦略', line=dict(width=4, color='crimson')))
+        
+        fig_paths_b.update_layout(title="5年間 累積 NII推移", xaxis_title='経過年数 (0年は入替直後)', yaxis_title='累積 NII (億円)', template='plotly_white', hovermode='x unified')
+        st.plotly_chart(fig_paths_b, use_container_width=True)
+        
+        with st.expander("🔍 選択した各戦略の個別バケット構成 (棒グラフ)", expanded=False):
+            c_len = len(comp_strats)
+            if c_len > 0:
+                rows_comp = (c_len + 1) // 2
+                fig_comp_bars = make_subplots(rows=rows_comp, cols=2, subplot_titles=comp_strats, vertical_spacing=0.15)
+                for sc_idx, st_name in enumerate(comp_strats):
+                    r = (sc_idx // 2) + 1; cb = (sc_idx % 2) + 1
+                    sv = get_strategy_volumes(df, df_strategies, st_name, budget)
+                    res_c_agg = df.copy(); res_c_agg['Swap'] = sv
+                    res_c_agg['Keep_Locked'] = np.where(res_c_agg['Swap_Eligible'] == 0, res_c_agg['Book_Value'], 0)
+                    res_c_agg['Keep_Eligible'] = np.where(res_c_agg['Swap_Eligible'] == 1, res_c_agg['Book_Value'] - res_c_agg['Swap'], 0)
+                    bagg_c = res_c_agg.groupby('Bucket')[['Keep_Locked', 'Keep_Eligible', 'Swap']].sum().reindex(BUCKET_ORDER).fillna(0).reset_index()
+                    
+                    fig_comp_bars.add_trace(go.Bar(name='入替不可(固定)', x=bagg_c['Bucket'], y=bagg_c['Keep_Locked'], marker_color='darkgray', texttemplate='%{y:.0f}', showlegend=(sc_idx==0)), row=r, col=cb)
+                    fig_comp_bars.add_trace(go.Bar(name='残存(Keep)', x=bagg_c['Bucket'], y=bagg_c['Keep_Eligible'], marker_color='rgb(55, 83, 109)', texttemplate='%{y:.0f}', showlegend=(sc_idx==0)), row=r, col=cb)
+                    fig_comp_bars.add_trace(go.Bar(name='入替(Swap)', x=bagg_c['Bucket'], y=bagg_c['Swap'], marker_color='rgb(219, 64, 82)', texttemplate='%{y:.0f}', showlegend=(sc_idx==0)), row=r, col=cb)
+                
+                fig_comp_bars.update_layout(barmode='stack', height=350 * rows_comp, template='plotly_white')
+                st.plotly_chart(fig_comp_bars, use_container_width=True)
+        comp_df = pd.DataFrame(comp_data).sort_values(by='5年累積NII(億円)', ascending=False)
+        st.dataframe(comp_df.style.highlight_max(subset=['5年累積NII(億円)', '3年累積NII(億円)', '1年累積NII(億円)'], color='lightgreen').format({
+            '5年累積NII(億円)': '{:.1f}', '3年累積NII(億円)': '{:.1f}', '1年累積NII(億円)': '{:.1f}', '見込み実現損(億円)': '{:.1f}'
+        }), use_container_width=True)
+        st.download_button("結果をExcelでDL", data=export_results_excel({active_scen_name: pA}, res_df), file_name="PhaseB_results.xlsx")
+# ==========================================
+# Phase C
+# ==========================================
+with tabC:
+    opt_objective = st.selectbox("🎯 最適化の目的関数", ["最悪シナリオ(底値)の最大化: Min-Max", "期待値(平均NII)の最大化"])
+    c_col1, c_col2 = st.columns(2)
+    with c_col1:
+        sim_base = st.radio("ベースモデル", ["バーゼル 7シナリオ (確率加重)", "モンテカルロ・シミュレーション"])
+        mc_sim_count = 100
+        if "モンテカルロ" in sim_base: mc_sim_count = st.number_input("試行回数", min_value=10, max_value=10000, value=1000)
+    with c_col2:
+        strat_opts_c = ["現状維持 (すべて0)"] + DYNAMIC_STRATS
+        if df_strategies is not None and not df_strategies.empty: strat_opts_c += list(df_strategies['Strategy_Name'].unique())
+        baseline_strat = st.selectbox("比較の基準とする戦略", strat_opts_c)
+        
+    st.markdown("---")
+    if st.button("全天候型の最適化を実行", key="btn_c"):
+        b_vols = get_strategy_volumes(df, df_strategies, baseline_strat, budget)
+        b_loss = np.sum(b_vols * (df['Realized_Loss'].values / df['Book_Value'].values))
+        omk = "Min-Max" if "Min-Max" in opt_objective else "Mean"
+        
+        if "モンテカルロ" in sim_base:
+            t_names, YS_c, sYS_c = build_mc_ys_tensor(df, mc_sim_count)
+            dl_lbls = ["Down_95th(最悪帯)", "Median(中央値)", "Up_5th(最良帯)"]
+            chart_title = f"モンテカルロ(N={mc_sim_count}) 5年間累計NII（分位別）"
+        else:
+            t_names = list(SCENARIO_PROBS.keys())
+            YS_c, sYS_c = build_ys_tensor(df, t_names, df_scenarios)
+            dl_lbls = t_names; chart_title = "バーゼル7シナリオ別 5年間累計NII"
+        opt_vols_c = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, t_names, YS_c, sYS_c, omk)
+        pb = calc_nii_paths_vectorized(b_vols / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False)
+        po = calc_nii_paths_vectorized(opt_vols_c / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False)
+        
+        if "モンテカルロ" in sim_base:
+            v_b = [np.percentile([sum(pb[s]) for s in t_names], 5), np.median([sum(pb[s]) for s in t_names]), np.percentile([sum(pb[s]) for s in t_names], 95)]
+            v_o = [np.percentile([sum(po[s]) for s in t_names], 5), np.median([sum(po[s]) for s in t_names]), np.percentile([sum(po[s]) for s in t_names], 95)]
+        else:
+            v_b = [sum(pb[l]) for l in t_names]; v_o = [sum(po[l]) for l in t_names]
+        st.subheader("💡 導出された最適な入替戦略効果 (基準戦略 vs 最適化戦略)")
+        
+        fig_comp_mix = make_subplots(rows=2, cols=2, subplot_titles=(f"基準戦略: {baseline_strat}", "提案: 最適化戦略", "基準NIIパス変動幅", "ロバストNIIパス変動幅"), vertical_spacing=0.2, shared_yaxes=True)
+        
+        res_b_agg = df.copy(); res_b_agg['Swap'] = b_vols
+        res_b_agg['Keep_Locked'] = np.where(res_b_agg['Swap_Eligible'] == 0, res_b_agg['Book_Value'], 0)
+        res_b_agg['Keep_Eligible'] = np.where(res_b_agg['Swap_Eligible'] == 1, res_b_agg['Book_Value'] - res_b_agg['Swap'], 0)
+        bagg1 = res_b_agg.groupby('Bucket')[['Keep_Locked', 'Keep_Eligible', 'Swap']].sum().reindex(BUCKET_ORDER).fillna(0).reset_index()
+        fig_comp_mix.add_trace(go.Bar(name='入替不可(固定)', x=bagg1['Bucket'], y=bagg1['Keep_Locked'], marker_color='darkgray', texttemplate='%{y:.0f}', legendgroup='b'), row=1, col=1)
+        fig_comp_mix.add_trace(go.Bar(name='残存(Keep)', x=bagg1['Bucket'], y=bagg1['Keep_Eligible'], marker_color='rgb(55, 83, 109)', texttemplate='%{y:.0f}', legendgroup='b'), row=1, col=1)
+        fig_comp_mix.add_trace(go.Bar(name='入替(Swap)', x=bagg1['Bucket'], y=bagg1['Swap'], marker_color='rgb(219, 64, 82)', texttemplate='%{y:.0f}', legendgroup='b'), row=1, col=1)
+        
+        res_o_agg = df.copy(); res_o_agg['Swap'] = opt_vols_c
+        res_o_agg['Keep_Locked'] = np.where(res_o_agg['Swap_Eligible'] == 0, res_o_agg['Book_Value'], 0)
+        res_o_agg['Keep_Eligible'] = np.where(res_o_agg['Swap_Eligible'] == 1, res_o_agg['Book_Value'] - res_o_agg['Swap'], 0)
+        bagg2 = res_o_agg.groupby('Bucket')[['Keep_Locked', 'Keep_Eligible', 'Swap']].sum().reindex(BUCKET_ORDER).fillna(0).reset_index()
+        fig_comp_mix.add_trace(go.Bar(name='入替不可(固定)', x=bagg2['Bucket'], y=bagg2['Keep_Locked'], marker_color='darkgray', texttemplate='%{y:.0f}', showlegend=False, legendgroup='b'), row=1, col=2)
+        fig_comp_mix.add_trace(go.Bar(name='残存(Keep)', x=bagg2['Bucket'], y=bagg2['Keep_Eligible'], marker_color='rgb(55, 83, 109)', texttemplate='%{y:.0f}', showlegend=False, legendgroup='b'), row=1, col=2)
+        fig_comp_mix.add_trace(go.Bar(name='入替(Swap)', x=bagg2['Bucket'], y=bagg2['Swap'], marker_color='rgb(219, 64, 82)', texttemplate='%{y:.0f}', showlegend=False, legendgroup='b'), row=1, col=2)
+        years = [1, 2, 3, 4, 5]
+        def get_fan(pdct): return np.min(np.array(list(pdct.values())), axis=0), np.max(np.array(list(pdct.values())), axis=0), np.mean(np.array(list(pdct.values())), axis=0)
+        b_min, b_max, b_avg = get_fan(pb); o_min, o_max, o_avg = get_fan(po)
+        
+        fig_comp_mix.add_trace(go.Scatter(x=years+years[::-1], y=np.concatenate([b_max, b_min[::-1]]), fill='toself', fillcolor='rgba(128, 128, 128, 0.2)', line=dict(color='rgba(255,255,255,0)'), name='変動範囲 (Fan)', legendgroup='f'), row=2, col=1)
+        fig_comp_mix.add_trace(go.Scatter(x=years, y=b_avg, mode='lines+markers', name='平均パス', line=dict(color='blue', width=3), legendgroup='f'), row=2, col=1)
+        fig_comp_mix.add_trace(go.Scatter(x=years+years[::-1], y=np.concatenate([o_max, o_min[::-1]]), fill='toself', fillcolor='rgba(128, 128, 128, 0.2)', line=dict(color='rgba(255,255,255,0)'), showlegend=False, legendgroup='f'), row=2, col=2)
+        fig_comp_mix.add_trace(go.Scatter(x=years, y=o_avg, mode='lines+markers', name='平均パス', line=dict(color='crimson', width=3), showlegend=False, legendgroup='f'), row=2, col=2)
+        fig_comp_mix.update_layout(barmode='stack', height=700, template='plotly_white', hovermode='x unified')
+        st.plotly_chart(fig_comp_mix, use_container_width=True)
+        fig_c = go.Figure(data=[
+            go.Bar(name=f'{baseline_strat}', x=dl_lbls, y=v_b, marker_color='lightslategray', texttemplate='%{y:.1f}', textposition='auto'),
+            go.Bar(name='最適化戦略', x=dl_lbls, y=v_o, marker_color='crimson', texttemplate='%{y:.1f}', textposition='auto')
+        ])
+        fig_c.update_layout(barmode='group', title=chart_title, template='plotly_white', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig_c, use_container_width=True)
+        
+        df_diff = pd.DataFrame({'Scenario': dl_lbls, 'Baseline_NII(億円)': v_b, 'Robust_Opt_NII(億円)': v_o})
+        df_diff['Delta_改善幅(億円)'] = df_diff['Robust_Opt_NII(億円)'] - df_diff['Baseline_NII(億円)']
+        st.dataframe(df_diff.style.format({'Baseline_NII(億円)': '{:.2f}', 'Robust_Opt_NII(億円)': '{:.2f}', 'Delta_改善幅(億円)': '{:.2f}'}).highlight_max(subset=['Delta_改善幅(億円)'], color='lightgreen'), use_container_width=True)
+        res_df_c = df.copy(); res_df_c['Swap_Volume'] = opt_vols_c
+        st.download_button("最適結果をExcelでDL", data=export_results_excel(po, res_df_c), file_name="PhaseC_results.xlsx")
