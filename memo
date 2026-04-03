@@ -33,8 +33,10 @@ def get_bucket_d_proxy(b):
     if b == '残存5-7年': return 6.0
     if b == '残存7-10年': return 8.5
     return 12.0
-def get_unified_ys(sc_name, t, bucket_name, d, df_scenarios=None):
-    if df_scenarios is not None and not df_scenarios.empty:
+def get_unified_ys(sc_name, t, bucket_name, d, df_scenarios=None, scen_map=None):
+    if scen_map is not None:
+        if (sc_name, bucket_name) in scen_map: return scen_map[(sc_name, bucket_name)][t]
+    elif df_scenarios is not None and not df_scenarios.empty:
         df_match = df_scenarios[(df_scenarios['Scenario_Name'] == sc_name) & (df_scenarios['Bucket'] == bucket_name)]
         if not df_match.empty:
             try: return float(df_match.iloc[0][f'Year{t+1}_Shift'])
@@ -56,14 +58,27 @@ def get_unified_ys(sc_name, t, bucket_name, d, df_scenarios=None):
 def build_ys_tensor(df, S_names, df_scenarios=None):
     S = len(S_names); N = len(df)
     YS = np.zeros((S, 5, N))
-    min_d = df['Duration'].min()
-    short_b = df.loc[df['Duration'].idxmin(), 'Bucket'] if len(df) > 0 else "N/A"
+    min_d = df['Duration'].min() if len(df) > 0 else 0.5
+    short_b = df.loc[df['Duration'].idxmin(), 'Bucket'] if len(df) > 0 else "短期(現金等)"
     short_YS = np.zeros((S, 5))
+    
+    scen_map = {}
+    if df_scenarios is not None and not df_scenarios.empty:
+        for _, r in df_scenarios.iterrows():
+            sn = r['Scenario_Name']; bn = r['Bucket']
+            scen_map[(sn, bn)] = [float(r[f'Year{t+1}_Shift']) for t in range(5)]
+            
     for s_idx, sc_name in enumerate(S_names):
-        for t in range(5):
-            for i, row in df.iterrows():
-                YS[s_idx, t, i] = get_unified_ys(sc_name, t, row['Bucket'], row['Duration'], df_scenarios)
-            short_YS[s_idx, t] = get_unified_ys(sc_name, t, short_b, min_d, df_scenarios)
+        short_YS[s_idx, :] = np.array([get_unified_ys(sc_name, t, short_b, min_d, scen_map=scen_map) for t in range(5)])
+        
+        # Array acceleration
+        for i, row in df.iterrows():
+            b_name = row['Bucket']; d = row['Duration']
+            if (sc_name, b_name) in scen_map:
+                YS[s_idx, :, i] = scen_map[(sc_name, b_name)]
+            else:
+                YS[s_idx, :, i] = [get_unified_ys(sc_name, t, b_name, d, scen_map=scen_map) for t in range(5)]
+                
     return YS, short_YS
 def build_mc_ys_tensor(df, mc_count):
     S = mc_count; N = len(df)
@@ -120,24 +135,79 @@ def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta
         res[sc_name] = [nii_t0] + p.tolist() if include_t0 else p.tolist()
     return res
 def optimize_portfolio_vectorized(df, tgt_budget, base_cost, depo_beta, S_names, YS_tensor, short_YS, obj_mode="Min-Max"):
-    elig_i = np.where(df['Swap_Eligible'].values == 1)[0]
-    if len(elig_i) == 0: return np.zeros(len(df))
+    idx_el = df.index[df['Swap_Eligible'] == 1].tolist()
+    N_el = len(idx_el)
+    if N_el == 0: return np.zeros(len(df))
     
-    def obj_func(w_opt):
-        W = np.zeros(len(df)); W[elig_i] = w_opt
-        paths = calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, depo_beta, short_YS, False)
-        tots = [sum(p) for p in paths.values()]
-        if "Min-Max" in obj_mode: return -np.percentile(tots, 5) if len(S_names) > 10 else -min(tots)
-        else: return -np.mean(tots) if len(S_names) > 10 else -sum(SCENARIO_PROBS.get(s, 1.0/len(S_names)) * sum(paths[s]) for s in S_names)
+    b_vals = df['Book_Value'].values[idx_el]
+    m_vals = df['Market_Value'].values[idx_el]
+    losses = df['Realized_Loss'].values[idx_el]
+    coupons = df['Coupon'].values[idx_el]
+    durations = df['Duration'].values[idx_el]
+    RY = df['Current_Yield'].values[idx_el][None, None, :] + YS_tensor[:, :, idx_el]
     
-    def c_max(w_opt):
-        W = np.zeros(len(df)); W[elig_i] = w_opt
-        return tgt_budget - np.sum(W * df['Realized_Loss'].values)
+    stay_yield = np.zeros((len(S_names), 5, N_el))
+    swap_yield = np.zeros((len(S_names), 5, N_el))
+    
+    for t in range(5):
+        for j, d in enumerate(durations):
+            m_cycles = int(t // max(1.0, d))
+            if m_cycles == 0:
+                stay_yield[:, t, j] = coupons[j]
+                swap_yield[:, t, j] = RY[:, 0, j]
+            else:
+                m_time = min(int(m_cycles * max(1.0, d)), 4)
+                stay_yield[:, t, j] = RY[:, m_time, j]
+                swap_yield[:, t, j] = RY[:, m_time, j]
+                
+    nii_stay = (b_vals[None, None, :] * stay_yield / 100.0).sum(axis=1) # (S, N_el)
+    nii_swap = (m_vals[None, None, :] * swap_yield / 100.0).sum(axis=1) # (S, N_el)
+    
+    net_gains = nii_swap - nii_stay
         
-    bounds = tuple((0.0, 1.0) for _ in range(len(elig_i)))
-    res = minimize(obj_func, np.zeros(len(elig_i)), method='SLSQP', bounds=bounds, constraints={'type': 'ineq', 'fun': c_max})
-    final_W = np.zeros(len(df)); final_W[elig_i] = res.x
-    return final_W * df['Book_Value'].values
+    mean_gains = net_gains.mean(axis=0)
+    import scipy.optimize as opt
+    
+    if obj_mode == "Mean":
+        c = -mean_gains
+        A_ub = losses.reshape(1, -1)
+        b_ub = np.array([tgt_budget])
+        bounds = [(0, 1) for _ in range(N_el)]
+        
+        res = opt.linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+        w_el = res.x if res.success else np.zeros(N_el)
+        
+    elif obj_mode == "Min-Max":
+        c = np.zeros(N_el + 1)
+        c[-1] = -1 
+        
+        A_ub = np.zeros((len(S_names) + 1, N_el + 1))
+        b_ub = np.zeros(len(S_names) + 1)
+        
+        # Calculate W=0 Baseline absolute NII dynamically to correctly optimize total EV floor instead of just delta
+        pb = calc_nii_paths_vectorized(np.zeros(len(df)), df, S_names, YS_tensor, base_cost, depo_beta, short_YS, False)
+        C_base = np.array([sum(pb[s]) for s in S_names])
+        
+        for s_idx in range(len(S_names)):
+            A_ub[s_idx, :N_el] = -net_gains[s_idx, :]
+            A_ub[s_idx, -1] = 1.0  
+            b_ub[s_idx] = C_base[s_idx]
+            
+        A_ub[-1, :N_el] = losses
+        A_ub[-1, -1] = 0.0
+        b_ub[-1] = tgt_budget
+        
+        bounds = [(0, 1) for _ in range(N_el)] + [(None, None)] 
+        
+        try:
+            res = opt.linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+            w_el = res.x[:N_el] if res.success else np.zeros(N_el)
+        except:
+            w_el = np.zeros(N_el)
+            
+    final_w = np.zeros(len(df))
+    final_w[idx_el] = w_el
+    return final_w * df['Book_Value'].values
 def get_strategy_volumes(df, df_strategies, strategy_name, budget_limit=50.0):
     vols = np.zeros(len(df))
     if strategy_name == "現状維持 (すべて0)": return vols
@@ -183,18 +253,30 @@ def get_sample_excel():
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         np.random.seed(42)
         port_data = []
-        for i in range(1, 41):
+        def approx_yield(d_val):
+            if d_val < 3: return 0.5
+            if d_val < 5: return 0.8
+            if d_val < 7: return 1.3
+            if d_val < 10: return 1.8
+            return 2.5
+            
+        for i in range(1, 1501):
             dur = round(np.random.uniform(1.0, 14.0), 1)
             is_recent = np.random.rand() < 0.2
+            current_y = approx_yield(dur)
+            
             if is_recent:
-                coupon = round(np.random.uniform(0.5, 1.5), 2)
+                coupon = max(0.01, round(np.random.uniform(current_y - 0.2, current_y + 0.2), 2))
                 eligible = 0 if np.random.rand() < 0.8 else 1
             else:
-                coupon = round(np.random.uniform(0.05, 0.3), 2)
+                coupon = round(np.random.uniform(0.01, 0.3), 2)
                 eligible = 1
-            book = round(np.random.uniform(50, 200), -1)
-            mkt = round(book * (1.0 - (dur * 0.015)), -1)
-            port_data.append({'Item_Name': f'Bond_{i:02d}_{"Recent" if is_recent else "Legacy"}', 'Book_Value': book, 'Market_Value': mkt, 'Coupon': coupon, 'Duration': dur, 'Swap_Eligible': eligible})
+                
+            loss_ratio = max(0.001, (current_y - coupon) * dur / 100.0) 
+            book = round(np.random.uniform(1.0, 6.0), 1)
+            mkt = max(0.1, round(book * (1.0 - loss_ratio), 1))
+            
+            port_data.append({'Item_Name': f'Bond_{i:04d}_{"Recent" if is_recent else "Legacy"}', 'Book_Value': book, 'Market_Value': mkt, 'Coupon': coupon, 'Duration': dur, 'Swap_Eligible': eligible})
         pd.DataFrame(port_data).to_excel(writer, sheet_name='Portfolio', index=False)
         
         pd.DataFrame({
@@ -212,8 +294,20 @@ def get_sample_excel():
     return output.getvalue()
 def export_results_excel(paths, strategy_df):
     output = io.BytesIO()
+    
+    sdf = strategy_df.copy()
+    if 'Swap_Volume' in sdf.columns: sdf = sdf.rename(columns={'Swap_Volume': 'Swap_Book_Value(売却簿価)'})
+    elif 'Swap' in sdf.columns: sdf = sdf.rename(columns={'Swap': 'Swap_Book_Value(売却簿価)'})
+        
+    if 'Swap_Book_Value(売却簿価)' in sdf.columns and 'Market_Value' in sdf.columns:
+        ratio = sdf['Market_Value'] / sdf['Book_Value']
+        sdf['Swap_Market_Value(再投資時価)'] = sdf['Swap_Book_Value(売却簿価)'] * ratio.fillna(0)
+        cols = list(sdf.columns)
+        if 'Swap_Market_Value(再投資時価)' in cols:
+            cols.insert(cols.index('Swap_Book_Value(売却簿価)') + 1, cols.pop(cols.index('Swap_Market_Value(再投資時価)')))
+            sdf = sdf[cols]
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        strategy_df.to_excel(writer, sheet_name='Optimal_Strategy', index=False)
+        sdf.to_excel(writer, sheet_name='Optimal_Strategy', index=False)
         res_data = []
         for sc_name, path in paths.items():
             row = {'Scenario': sc_name}
@@ -250,9 +344,13 @@ with st.sidebar:
     df['Realized_Loss'] = df['Book_Value'] - df['Market_Value']
     st.markdown("---")
     st.subheader("2. グローバル設定")
-    budget = st.number_input("💰 実現損の許容枠 (億円)", value=200.0)
+    budget = st.number_input("💰 実現損の許容枠 (億円)", value=50.0)
     base_cost = st.number_input("基準となる資金調達コスト (%)", value=0.50)
     deposit_beta = st.number_input("預金β (短期金利への連動率)", value=0.30)
+    
+    st.markdown("---")
+    with st.expander("💡 搭載エンジン: V3.0 Exact LP Solver"):
+         st.markdown("本シミュレータは、背後で**線形計画法（LPソルバー: Scipy HiGHS）**という専門アルゴリズムを利用しています。<br>1万を超える個別銘柄を「バケット等に丸めず」それぞれ独立した変数として扱い、予算制約の中で『最もNIIの増加幅（費用対効果）が高い銘柄』を数学的・大域的に一撃で抽出します。<br>また、入替（Swap）に伴って発生する**再投資額は「時価（Market Value）」を厳密にベースにして新たな市場金利で運用される計算**となっており、極めて現実のポートフォリオ管理に即した精密な挙動を取ります。", unsafe_allow_html=True)
 st.title("債券ポートフォリオ最適化 シミュレータ")
 with st.expander("📊 現在の個別銘柄データを確認", expanded=False):
     st.dataframe(df.style.format({'Book_Value': '{:.0f}', 'Market_Value': '{:.0f}', 'Realized_Loss': '{:.1f}', 'Coupon': '{:.2f}%', 'Current_Yield': '{:.2f}%', 'Duration': '{:.1f}年'}), use_container_width=True)
@@ -439,14 +537,24 @@ with tabC:
         b_loss = np.sum(b_vols * (df['Realized_Loss'].values / df['Book_Value'].values))
         omk = "Min-Max" if "Min-Max" in opt_objective else "Mean"
         
-        if "モンテカルロ" in sim_base:
+        sim_probs = SCENARIO_PROBS.copy()
+        if "バーゼル" in sim_base:
+            t_names = list(SCENARIO_PROBS.keys())
+            st.write("▼ 各シナリオの発生確率（期待値評価用）: 表を直接編集して加重値を変更できます")
+            prob_df = pd.DataFrame(list(sim_probs.items()), columns=['シナリオ', '確率(%)'])
+            prob_df['確率(%)'] = prob_df['確率(%)'] * 100
+            edited_df = st.data_editor(prob_df, hide_index=True, use_container_width=True)
+            
+            p_vals = edited_df['確率(%)'].values
+            if p_vals.sum() > 0: p_vals = p_vals / p_vals.sum()
+            sim_probs = dict(zip(edited_df['シナリオ'], p_vals))
+            
+            YS_c, sYS_c = build_ys_tensor(df, t_names, df_scenarios)
+            dl_lbls = t_names; chart_title = "バーゼル7シナリオ別 5年間累計NII"
+        else:
             t_names, YS_c, sYS_c = build_mc_ys_tensor(df, mc_sim_count)
             dl_lbls = ["Down_95th(最悪帯)", "Median(中央値)", "Up_5th(最良帯)"]
             chart_title = f"モンテカルロ(N={mc_sim_count}) 5年間累計NII（分位別）"
-        else:
-            t_names = list(SCENARIO_PROBS.keys())
-            YS_c, sYS_c = build_ys_tensor(df, t_names, df_scenarios)
-            dl_lbls = t_names; chart_title = "バーゼル7シナリオ別 5年間累計NII"
         opt_vols_c = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, t_names, YS_c, sYS_c, omk)
         pb = calc_nii_paths_vectorized(b_vols / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False)
         po = calc_nii_paths_vectorized(opt_vols_c / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False)
@@ -502,7 +610,6 @@ with tabC:
 # ==========================================
 # Phase D (V2.0 Advanced Analytics)
 # ==========================================
-@st.cache_data(show_spinner=False)
 def get_cached_area_data(_df, _df_scenarios, base_cost, depo_beta, max_loss):
     b_steps = np.linspace(0.0, max_loss * 1.05, 15)
     t_names = list(SCENARIO_PROBS.keys())
@@ -527,8 +634,8 @@ with tabD:
     max_loss = df[df['Swap_Eligible'] == 1]['Realized_Loss'].clip(lower=0).sum()
     plot_max = max(max_loss * 1.05, budget * 1.1)
     
-    # Interactive Dynamic Slider
-    d_budget = st.slider("💡 分析用スライダー: ここを左右に動かして、予算を増減させてみてください", min_value=0.0, max_value=float(plot_max), value=float(budget), step=1.0)
+    # Static Numeric input replacing slider
+    d_budget = st.number_input("💡 分析用任意予算: 以下のチャートやExcel出力の計算に用いる損失許容額を入力してください", min_value=0.0, value=float(budget), step=10.0)
     
     area_data = get_cached_area_data(df, df_scenarios, base_cost, deposit_beta, max_loss)
     t_names = list(SCENARIO_PROBS.keys())
@@ -537,7 +644,7 @@ with tabD:
     fig_area = px.area(df_area, x="Budget（億円）", y="入替額", color="Bucket", line_group="Bucket", template="plotly_white", 
                        category_orders={"Bucket": BUCKET_ORDER},
                        title="予算規模と優先入替バケットの相関 (Min-Max方針)")
-    fig_area.add_vline(x=d_budget, line_dash="dash", line_color="crimson", annotation_text=f"シミュレーション予算: {d_budget:.1f}億円")
+    fig_area.add_vline(x=d_budget, line_dash="dash", line_color="crimson", annotation_text=f"任意設定予算: {d_budget:.1f}億円")
     st.plotly_chart(fig_area, use_container_width=True)
     
     st.markdown("---")
@@ -590,3 +697,8 @@ with tabD:
         fig_nii_d.add_trace(go.Scatter(x=years, y=b_avg, mode='lines+markers', name='現状維持 平均推移', line=dict(color='gray', width=2, dash='dash'), legendgroup='base'))
         fig_nii_d.update_layout(template='plotly_white', hovermode='x unified', xaxis_title="経過年数", yaxis_title="累積 NII (億円)", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig_nii_d, use_container_width=True)
+    st.markdown("---")
+    st.subheader("4. 任意予算での最適ポートフォリオ（個別銘柄レベル）一括出力")
+    st.markdown(f"入力された予算 **{d_budget:.1f}億円** に基づく、銘柄単位の最適入替リスト（LPソルバー計算結果）です。")
+    res_df_d = df.copy(); res_df_d['Swap'] = opt_v_d
+    st.download_button("最適入替リスト (Excel) のダウンロード", data=export_results_excel({"D_MinMax_Avg": o_avg}, res_df_d), file_name="PhaseD_Optimal_Portfolio.xlsx")
