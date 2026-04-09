@@ -43,7 +43,7 @@ def get_unified_ys(sc_name, t, bucket_name, d, df_scenarios=None, scen_map=None)
             except: pass
             
     # BCBS 368 JPY Exact Parameters (Annex 2)
-    tf_ratio = (t + 1) / 5.0
+    tf_ratio = min(1.0, (t + 1) / 5.0)
     E = np.exp(-d / 4.0)
     
     val = 0.0
@@ -55,12 +55,12 @@ def get_unified_ys(sc_name, t, bucket_name, d, df_scenarios=None, scen_map=None)
     elif sc_name == SCENARIO_NAMES['ShortUp']: val = 2.50 * E
     elif sc_name == SCENARIO_NAMES['ShortDown']: val = -2.50 * E
     return round(val * tf_ratio, 4)
-def build_ys_tensor(df, S_names, df_scenarios=None):
+def build_ys_tensor(df, S_names, df_scenarios=None, eval_years=5):
     S = len(S_names); N = len(df)
-    YS = np.zeros((S, 5, N))
+    YS = np.zeros((S, eval_years, N))
     min_d = df['Duration'].min() if len(df) > 0 else 0.5
     short_b = df.loc[df['Duration'].idxmin(), 'Bucket'] if len(df) > 0 else "短期(現金等)"
-    short_YS = np.zeros((S, 5))
+    short_YS = np.zeros((S, eval_years))
     
     scen_map = {}
     if df_scenarios is not None and not df_scenarios.empty:
@@ -69,33 +69,34 @@ def build_ys_tensor(df, S_names, df_scenarios=None):
             scen_map[(sn, bn)] = [float(r[f'Year{t+1}_Shift']) for t in range(5)]
             
     for s_idx, sc_name in enumerate(S_names):
-        short_YS[s_idx, :] = np.array([get_unified_ys(sc_name, t, short_b, min_d, scen_map=scen_map) for t in range(5)])
+        short_YS[s_idx, :] = np.array([get_unified_ys(sc_name, t, short_b, min_d, scen_map=scen_map) for t in range(eval_years)])
         
         # Array acceleration
         for i, row in df.iterrows():
             b_name = row['Bucket']; d = row['Duration']
             if (sc_name, b_name) in scen_map:
-                YS[s_idx, :, i] = scen_map[(sc_name, b_name)]
+                base_arr = scen_map[(sc_name, b_name)]
+                YS[s_idx, :, i] = base_arr[:eval_years] if eval_years <= 5 else base_arr + [base_arr[-1]] * (eval_years - 5)
             else:
-                YS[s_idx, :, i] = [get_unified_ys(sc_name, t, b_name, d, scen_map=scen_map) for t in range(5)]
+                YS[s_idx, :, i] = [get_unified_ys(sc_name, t, b_name, d, scen_map=scen_map) for t in range(eval_years)]
                 
     return YS, short_YS
-def build_mc_ys_tensor(df, mc_count):
+def build_mc_ys_tensor(df, mc_count, eval_years=5):
     S = mc_count; N = len(df)
     S_names = [f"MC_{i}" for i in range(S)]
-    YS = np.zeros((S, 5, N))
+    YS = np.zeros((S, eval_years, N))
     np.random.seed(42)
-    lvls = np.cumsum(np.random.normal(0.0, 0.3, (S, 5)), axis=1)
-    slps = np.cumsum(np.random.normal(0.0, 0.15, (S, 5)), axis=1)
+    lvls = np.cumsum(np.random.normal(0.0, 0.3, (S, eval_years)), axis=1)
+    slps = np.cumsum(np.random.normal(0.0, 0.15, (S, eval_years)), axis=1)
     factor = (df['Duration'].values - 2.0) / 8.0
-    for t in range(5): YS[:, t, :] = lvls[:, t, None] + slps[:, t, None] * factor[None, :]
+    for t in range(eval_years): YS[:, t, :] = lvls[:, t, None] + slps[:, t, None] * factor[None, :]
     min_idx = df['Duration'].argmin()
     short_YS = YS[:, :, min_idx]
     return S_names, YS, short_YS
 # ==========================================
 # 2. Main Logic Functions
 # ==========================================
-def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta, short_bucket_YS, include_t0=False):
+def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta, short_bucket_YS, include_t0=False, eval_years=5, tx_cost_bps=3):
     S = len(S_names); N = len(df)
     tot_book = df['Book_Value'].sum()
     coupons = df['Coupon'].values
@@ -103,20 +104,20 @@ def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta
     b_vals = df['Book_Value'].values
     m_vals = df['Market_Value'].values
     RY = df['Current_Yield'].values[None, None, :] + YS_tensor
-    stay_yield = np.zeros((S, 5, N))
-    swap_yield = np.zeros((S, 5, N))
+    stay_yield = np.zeros((S, eval_years, N))
+    swap_yield = np.zeros((S, eval_years, N))
     
-    for t in range(5):
+    for t in range(eval_years):
         for i, d in enumerate(durations):
             m_cycles = int(t // max(1.0, d))
             if m_cycles == 0:
                 stay_yield[:, t, i] = coupons[i]
-                swap_yield[:, t, i] = RY[:, 0, i]
+                swap_yield[:, t, i] = RY[:, 0, i] - (tx_cost_bps / 100.0)
             else:
                 m_time = int(m_cycles * max(1.0, d))
-                if m_time > 4: m_time = 4
+                if m_time > eval_years - 1: m_time = eval_years - 1
                 stay_yield[:, t, i] = RY[:, m_time, i]
-                swap_yield[:, t, i] = RY[:, m_time, i]
+                swap_yield[:, t, i] = RY[:, m_time, i] - (tx_cost_bps / 100.0)
     
     C_stay_inc = np.sum((1 - W[None, None, :]) * b_vals[None, None, :] * stay_yield / 100.0, axis=2)
     reinvest_inc = np.sum(W[None, None, :] * m_vals[None, None, :] * swap_yield / 100.0, axis=2)
@@ -125,7 +126,7 @@ def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta
     liab_cost = tot_book * ((base_cost + deposit_beta * short_bucket_YS) / 100.0)
     nii_paths = asset_inc - liab_cost
     
-    nii_t0_asset = np.sum((1 - W) * b_vals * (coupons / 100.0)) + np.sum(W * m_vals * (df['Current_Yield'].values / 100.0))
+    nii_t0_asset = np.sum((1 - W) * b_vals * (coupons / 100.0)) + np.sum(W * m_vals * ((df['Current_Yield'].values - (tx_cost_bps / 100.0)) / 100.0))
     nii_t0_liab = tot_book * (base_cost / 100.0)
     nii_t0 = nii_t0_asset - nii_t0_liab
     
@@ -134,7 +135,7 @@ def calc_nii_paths_vectorized(W, df, S_names, YS_tensor, base_cost, deposit_beta
         p = nii_paths[s_idx, :]
         res[sc_name] = [nii_t0] + p.tolist() if include_t0 else p.tolist()
     return res
-def optimize_portfolio_vectorized(df, tgt_budget, base_cost, depo_beta, S_names, YS_tensor, short_YS, obj_mode="Min-Max"):
+def optimize_portfolio_vectorized(df, tgt_budget, base_cost, depo_beta, S_names, YS_tensor, short_YS, obj_mode="Min-Max", eval_years=5, tx_cost_bps=3):
     idx_el = df.index[df['Swap_Eligible'] == 1].tolist()
     N_el = len(idx_el)
     if N_el == 0: return np.zeros(len(df))
@@ -146,19 +147,20 @@ def optimize_portfolio_vectorized(df, tgt_budget, base_cost, depo_beta, S_names,
     durations = df['Duration'].values[idx_el]
     RY = df['Current_Yield'].values[idx_el][None, None, :] + YS_tensor[:, :, idx_el]
     
-    stay_yield = np.zeros((len(S_names), 5, N_el))
-    swap_yield = np.zeros((len(S_names), 5, N_el))
+    stay_yield = np.zeros((len(S_names), eval_years, N_el))
+    swap_yield = np.zeros((len(S_names), eval_years, N_el))
     
-    for t in range(5):
+    for t in range(eval_years):
         for j, d in enumerate(durations):
             m_cycles = int(t // max(1.0, d))
             if m_cycles == 0:
                 stay_yield[:, t, j] = coupons[j]
-                swap_yield[:, t, j] = RY[:, 0, j]
+                swap_yield[:, t, j] = RY[:, 0, j] - (tx_cost_bps / 100.0)
             else:
-                m_time = min(int(m_cycles * max(1.0, d)), 4)
+                m_time = int(m_cycles * max(1.0, d))
+                if m_time > eval_years - 1: m_time = eval_years - 1
                 stay_yield[:, t, j] = RY[:, m_time, j]
-                swap_yield[:, t, j] = RY[:, m_time, j]
+                swap_yield[:, t, j] = RY[:, m_time, j] - (tx_cost_bps / 100.0)
                 
     nii_stay = (b_vals[None, None, :] * stay_yield / 100.0).sum(axis=1) # (S, N_el)
     nii_swap = (m_vals[None, None, :] * swap_yield / 100.0).sum(axis=1) # (S, N_el)
@@ -185,7 +187,7 @@ def optimize_portfolio_vectorized(df, tgt_budget, base_cost, depo_beta, S_names,
         b_ub = np.zeros(len(S_names) + 1)
         
         # Calculate W=0 Baseline absolute NII dynamically to correctly optimize total EV floor instead of just delta
-        pb = calc_nii_paths_vectorized(np.zeros(len(df)), df, S_names, YS_tensor, base_cost, depo_beta, short_YS, False)
+        pb = calc_nii_paths_vectorized(np.zeros(len(df)), df, S_names, YS_tensor, base_cost, depo_beta, short_YS, False, eval_years, tx_cost_bps)
         C_base = np.array([sum(pb[s]) for s in S_names])
         
         for s_idx in range(len(S_names)):
@@ -248,6 +250,60 @@ def get_strategy_volumes(df, df_strategies, strategy_name, budget_limit=50.0):
 # ==========================================
 # 3. Excel Utilities
 # ==========================================
+BANK_TEMPLATES = {
+    "標準カスタム": {
+        "volume": 5000,
+        "duration": 4.5,
+        "unrealized_loss": -250,
+        "bucket_weights": [20, 25, 25, 20, 10]
+    },
+    "第四北越用": {
+        "volume": 29000,
+        "duration": 4.5,
+        "unrealized_loss": -1500,
+        "bucket_weights": [25, 30, 20, 15, 10]
+    }
+}
+def generate_realistic_portfolio(vol, dur, ul_loss, bw, num_items=1500):
+    np.random.seed(42)
+    b_order = ['残存1-3年', '残存3-5年', '残存5-7年', '残存7-10年', '残存10年超']
+    bw_norm = np.array(bw) / np.sum(bw)
+    counts = np.round(bw_norm * num_items).astype(int)
+    counts[-1] = num_items - sum(counts[:-1])
+    
+    port_data = []
+    def approx_yield(d_val):
+        if d_val < 3: return 0.5
+        if d_val < 5: return 0.8
+        if d_val < 7: return 1.3
+        if d_val < 10: return 1.8
+        return 2.5
+    target_loss_ratio = abs(ul_loss) / max(1.0, float(vol))
+    idx = 1
+    for b_idx, count in enumerate(counts):
+        if count == 0: continue
+        d_min = [1.0, 3.0, 5.0, 7.0, 10.0][b_idx]
+        d_max = [3.0, 5.0, 7.0, 10.0, 15.0][b_idx]
+        
+        b_volumes = np.random.dirichlet(np.ones(count)) * (vol * bw_norm[b_idx])
+        
+        for k in range(count):
+            d_val = round(np.random.uniform(d_min, d_max), 1)
+            book = b_volumes[k]
+            current_y = approx_yield(d_val)
+            
+            coupon = current_y - (target_loss_ratio * 100.0 / max(1.0, d_val))
+            coupon += np.random.normal(0, 0.05)
+            coupon = max(0.01, round(coupon, 2))
+            
+            loss_ratio = max(0.0, (current_y - coupon) * d_val / 100.0)
+            mkt = max(0.1, book * (1.0 - loss_ratio))
+            eligible = 1 if np.random.rand() < 0.8 else 0
+            
+            port_data.append({'Item_Name': f'Bond_{idx:04d}_{b_order[b_idx][:3]}', 'Book_Value': book, 'Market_Value': mkt, 'Coupon': coupon, 'Duration': d_val, 'Swap_Eligible': eligible})
+            idx += 1
+            
+    return pd.DataFrame(port_data)
 def get_sample_excel():
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -324,6 +380,29 @@ with st.sidebar:
     st.subheader("1. データインポート")
     st.download_button("サンプルデータ出力 (Excel)", data=get_sample_excel(), file_name="sample_data.xlsx")
     
+    with st.expander("🏢 実在金融機関モデル・ジェネレーター", expanded=False):
+        st.markdown("<small>公表データ等に基づくリアリティのある1,500銘柄のダミーを生成します。</small>", unsafe_allow_html=True)
+        preset = st.selectbox("プリセット・テンプレート", list(BANK_TEMPLATES.keys()))
+        t_data = BANK_TEMPLATES[preset]
+        
+        p_vol = st.number_input("想定ボリューム (億円)", value=int(t_data["volume"]), step=100)
+        p_dur = st.number_input("全体平均デュレーション (年) ※目安", value=float(t_data["duration"]), step=0.1)
+        p_ul = st.number_input("ダミーに持たせる『債券含み損』の総額 (億円, マイナス表記)", value=int(t_data["unrealized_loss"]), step=10, help="この機能を使い架空の債券を作る際、「どれくらい金利上昇で含み損を抱えたレガシー債券にするか」のパラメータです。シミュレーションの「実現損許容枠（予算）」とは別物です。")
+        
+        st.write("残存期間バケット構成比 (%)")
+        colA, colB = st.columns(2)
+        b1 = colA.number_input("1-3年", value=int(t_data["bucket_weights"][0]))
+        b2 = colB.number_input("3-5年", value=int(t_data["bucket_weights"][1]))
+        b3 = colA.number_input("5-7年", value=int(t_data["bucket_weights"][2]))
+        b4 = colB.number_input("7-10年", value=int(t_data["bucket_weights"][3]))
+        b5 = colA.number_input("10年超", value=int(t_data["bucket_weights"][4]))
+        
+        if st.button("ポートフォリオ自動生成 ＆ 適用", use_container_width=True):
+            df_gen = generate_realistic_portfolio(p_vol, p_dur, p_ul, [b1, b2, b3, b4, b5])
+            st.session_state['generated_df'] = df_gen
+            st.success(f"{preset} のデータを生成・適用しました！")
+            
+    st.markdown("---")
     uploaded_file = st.file_uploader("ポートフォリオExcelをアップロード", type=["xlsx", "xls"])
     df_strategies = df_scenarios = None
     
@@ -338,6 +417,8 @@ with st.sidebar:
                 try: locals()[target_var] = pd.read_excel(uploaded_file, sheet_name=name)
                 except: pass
         except Exception as e: st.error(f"読込エラー: {e}")
+    if not uploaded_file and 'generated_df' in st.session_state:
+        df = st.session_state['generated_df'].copy()
     df['Bucket'] = df['Duration'].apply(get_bucket)
     df = df.merge(df_mkt[['Bucket', 'Current_Yield']], on='Bucket', how='left')
     df['Current_Yield'] = df['Current_Yield'].fillna(0.0)
@@ -347,6 +428,8 @@ with st.sidebar:
     budget = st.number_input("💰 実現損の許容枠 (億円)", value=50.0)
     base_cost = st.number_input("基準となる資金調達コスト (%)", value=0.50)
     deposit_beta = st.number_input("預金β (短期金利への連動率)", value=0.30)
+    eval_years = st.slider("評価期間 (年)", min_value=1, max_value=10, value=5)
+    tx_cost_bps = st.number_input("入替時取引コスト (bps)", min_value=0, max_value=50, value=3)
     
     st.markdown("---")
     with st.expander("💡 搭載エンジン: V3.0 Exact LP Solver"):
@@ -397,7 +480,7 @@ with tabA:
             paths = calc_nii_paths_vectorized(W_t, df, selected_scenarios, YS_t, base_cost, deposit_beta, sys_t, True)
             
             fig = go.Figure()
-            years = [0, 1, 2, 3, 4, 5]
+            years = list(range(eval_years + 1))
             for sc_name in selected_scenarios: fig.add_trace(go.Scatter(x=years, y=paths[sc_name], mode='lines+markers', name=sc_name, line=dict(width=3)))
             fig.update_layout(title="選択シナリオにおけるNII推移", xaxis_title='経過年数 (0年は現在=Day-0 NII)', yaxis_title='単年度 NII (億円)', template='plotly_white', hovermode='x unified')
             st.plotly_chart(fig, use_container_width=True)
@@ -405,9 +488,9 @@ with tabA:
             pt_data = []
             for sc_name in selected_scenarios:
                 p_row = {'シナリオ': sc_name}
-                for t in range(6): p_row[f'Year {t}'] = paths[sc_name][t]
+                for t in range(eval_years + 1): p_row[f'Year {t}'] = paths[sc_name][t]
                 pt_data.append(p_row)
-            st.dataframe(pd.DataFrame(pt_data).style.format({f'Year {t}': '{:.1f}' for t in range(6)}), use_container_width=True)
+            st.dataframe(pd.DataFrame(pt_data).style.format({f'Year {t}': '{:.1f}' for t in range(eval_years + 1)}), use_container_width=True)
             res_strat_a = df[['Item_Name', 'Bucket']].copy(); res_strat_a['Swap_Volume'] = swap_volumes
             st.download_button("結果をExcelでDL", data=export_results_excel(paths, res_strat_a), file_name="PhaseA_results.xlsx")
     st.markdown("---")
@@ -443,11 +526,11 @@ with tabB:
     st.markdown("---")
     
     if active_scen_name:
-        YS_tb, sys_tb = build_ys_tensor(df, [active_scen_name], df_scenarios)
-        opt_vols_b = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, [active_scen_name], YS_tb, sys_tb, obj_mode="Mean")
+        YS_tb, sys_tb = build_ys_tensor(df, [active_scen_name], df_scenarios, eval_years=eval_years)
+        opt_vols_b = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, [active_scen_name], YS_tb, sys_tb, obj_mode="Mean", eval_years=eval_years, tx_cost_bps=tx_cost_bps)
         
         W_opt_b = opt_vols_b / df['Book_Value'].values
-        pA = calc_nii_paths_vectorized(W_opt_b, df, [active_scen_name], YS_tb, base_cost, deposit_beta, sys_tb, False)[active_scen_name]
+        pA = calc_nii_paths_vectorized(W_opt_b, df, [active_scen_name], YS_tb, base_cost, deposit_beta, sys_tb, False, eval_years=eval_years, tx_cost_bps=tx_cost_bps)[active_scen_name]
         opt_paths_cum = [0.0] + list(np.cumsum(pA))
         
         st.subheader("2. 導出された最適入替戦略（バケット集計）")
@@ -475,21 +558,21 @@ with tabB:
         
         comp_data = []
         fig_paths_b = go.Figure()
-        years = [0, 1, 2, 3, 4, 5]
+        years = list(range(eval_years + 1))
         
         for st_name in comp_strats:
             sv = get_strategy_volumes(df, df_strategies, st_name, budget)
             loss = np.sum(sv * (df['Realized_Loss'].values / df['Book_Value'].values))
             W_t = sv / df['Book_Value'].values
-            p_anu = calc_nii_paths_vectorized(W_t, df, [active_scen_name], YS_tb, base_cost, deposit_beta, sys_tb, False)[active_scen_name]
+            p_anu = calc_nii_paths_vectorized(W_t, df, [active_scen_name], YS_tb, base_cost, deposit_beta, sys_tb, False, eval_years, tx_cost_bps)[active_scen_name]
             p_cum = [0.0] + list(np.cumsum(p_anu))
-            comp_data.append({'戦略名': st_name, '見込み実現損(億円)': float(np.round(loss, 1)), '1年累積NII(億円)': p_cum[1], '3年累積NII(億円)': p_cum[3], '5年累積NII(億円)': p_cum[5]})
+            comp_data.append({'戦略名': st_name, '見込み実現損(億円)': float(np.round(loss, 1)), '1年累積NII(億円)': p_cum[1], f'{min(3, eval_years)}年累積NII(億円)': p_cum[min(3, eval_years)], f'{eval_years}年累積NII(億円)': p_cum[eval_years]})
             fig_paths_b.add_trace(go.Scatter(x=years, y=p_cum, mode='lines+markers', name=st_name, line=dict(dash='dash')))
             
-        comp_data.append({'戦略名': '最適化戦略', '見込み実現損(億円)': float(np.round(loss_opt, 1)), '1年累積NII(億円)': opt_paths_cum[1], '3年累積NII(億円)': opt_paths_cum[3], '5年累積NII(億円)': opt_paths_cum[5]})
+        comp_data.append({'戦略名': '最適化戦略', '見込み実現損(億円)': float(np.round(loss_opt, 1)), '1年累積NII(億円)': opt_paths_cum[1], f'{min(3, eval_years)}年累積NII(億円)': opt_paths_cum[min(3, eval_years)], f'{eval_years}年累積NII(億円)': opt_paths_cum[eval_years]})
         fig_paths_b.add_trace(go.Scatter(x=years, y=opt_paths_cum, mode='lines+markers', name='最適化戦略', line=dict(width=4, color='crimson')))
         
-        fig_paths_b.update_layout(title="5年間 累積 NII推移", xaxis_title='経過年数 (0年は入替直後)', yaxis_title='累積 NII (億円)', template='plotly_white', hovermode='x unified')
+        fig_paths_b.update_layout(title=f"{eval_years}年間 累積 NII推移", xaxis_title='経過年数 (0年は入替直後)', yaxis_title='累積 NII (億円)', template='plotly_white', hovermode='x unified')
         st.plotly_chart(fig_paths_b, use_container_width=True)
         
         with st.expander("🔍 選択した各戦略の個別バケット構成 (棒グラフ)", expanded=False):
@@ -511,9 +594,9 @@ with tabB:
                 
                 fig_comp_bars.update_layout(barmode='stack', height=350 * rows_comp, template='plotly_white')
                 st.plotly_chart(fig_comp_bars, use_container_width=True)
-        comp_df = pd.DataFrame(comp_data).sort_values(by='5年累積NII(億円)', ascending=False)
-        st.dataframe(comp_df.style.highlight_max(subset=['5年累積NII(億円)', '3年累積NII(億円)', '1年累積NII(億円)'], color='lightgreen').format({
-            '5年累積NII(億円)': '{:.1f}', '3年累積NII(億円)': '{:.1f}', '1年累積NII(億円)': '{:.1f}', '見込み実現損(億円)': '{:.1f}'
+        comp_df = pd.DataFrame(comp_data).sort_values(by=f'{eval_years}年累積NII(億円)', ascending=False)
+        st.dataframe(comp_df.style.highlight_max(subset=[f'{eval_years}年累積NII(億円)', f'{min(3, eval_years)}年累積NII(億円)', '1年累積NII(億円)'], color='lightgreen').format({
+            f'{eval_years}年累積NII(億円)': '{:.1f}', f'{min(3, eval_years)}年累積NII(億円)': '{:.1f}', '1年累積NII(億円)': '{:.1f}', '見込み実現損(億円)': '{:.1f}'
         }), use_container_width=True)
         st.download_button("結果をExcelでDL", data=export_results_excel({active_scen_name: pA}, res_df), file_name="PhaseB_results.xlsx")
 # ==========================================
@@ -554,10 +637,10 @@ with tabC:
         else:
             t_names, YS_c, sYS_c = build_mc_ys_tensor(df, mc_sim_count)
             dl_lbls = ["Down_95th(最悪帯)", "Median(中央値)", "Up_5th(最良帯)"]
-            chart_title = f"モンテカルロ(N={mc_sim_count}) 5年間累計NII（分位別）"
-        opt_vols_c = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, t_names, YS_c, sYS_c, omk)
-        pb = calc_nii_paths_vectorized(b_vols / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False)
-        po = calc_nii_paths_vectorized(opt_vols_c / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False)
+            chart_title = f"モンテカルロ(N={mc_sim_count}) {eval_years}年間累計NII（分位別）"
+        opt_vols_c = optimize_portfolio_vectorized(df, budget, base_cost, deposit_beta, t_names, YS_c, sYS_c, omk, eval_years=eval_years, tx_cost_bps=tx_cost_bps)
+        pb = calc_nii_paths_vectorized(b_vols / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False, eval_years=eval_years, tx_cost_bps=tx_cost_bps)
+        po = calc_nii_paths_vectorized(opt_vols_c / df['Book_Value'].values, df, t_names, YS_c, base_cost, deposit_beta, sYS_c, False, eval_years=eval_years, tx_cost_bps=tx_cost_bps)
         
         if "モンテカルロ" in sim_base:
             v_b = [np.percentile([sum(pb[s]) for s in t_names], 5), np.median([sum(pb[s]) for s in t_names]), np.percentile([sum(pb[s]) for s in t_names], 95)]
@@ -583,7 +666,7 @@ with tabC:
         fig_comp_mix.add_trace(go.Bar(name='入替不可(固定)', x=bagg2['Bucket'], y=bagg2['Keep_Locked'], marker_color='darkgray', texttemplate='%{y:.0f}', showlegend=False, legendgroup='b'), row=1, col=2)
         fig_comp_mix.add_trace(go.Bar(name='残存(Keep)', x=bagg2['Bucket'], y=bagg2['Keep_Eligible'], marker_color='rgb(55, 83, 109)', texttemplate='%{y:.0f}', showlegend=False, legendgroup='b'), row=1, col=2)
         fig_comp_mix.add_trace(go.Bar(name='入替(Swap)', x=bagg2['Bucket'], y=bagg2['Swap'], marker_color='rgb(219, 64, 82)', texttemplate='%{y:.0f}', showlegend=False, legendgroup='b'), row=1, col=2)
-        years = [1, 2, 3, 4, 5]
+        years = list(range(1, eval_years + 1))
         def get_fan(pdct): return np.min(np.array(list(pdct.values())), axis=0), np.max(np.array(list(pdct.values())), axis=0), np.mean(np.array(list(pdct.values())), axis=0)
         def cum_paths(p_dict): return {k: list(np.cumsum(v)) for k, v in p_dict.items()}
         pb_cum = cum_paths(pb); po_cum = cum_paths(po)
@@ -675,17 +758,17 @@ with tabD:
         st.markdown(f"予算 **{d_budget:.1f}億円** で最適入替（Min-Max）を実行した場合の、今後5年間の『累積NII推移帯』です。")
         
         # Run optimizer mapping D Output
-        YS_d, sYS_d = build_ys_tensor(df, t_names, df_scenarios)
-        opt_v_d = optimize_portfolio_vectorized(df, d_budget, base_cost, deposit_beta, t_names, YS_d, sYS_d, "Min-Max")
+        YS_d, sYS_d = build_ys_tensor(df, t_names, df_scenarios, eval_years=eval_years)
+        opt_v_d = optimize_portfolio_vectorized(df, d_budget, base_cost, deposit_beta, t_names, YS_d, sYS_d, "Min-Max", eval_years=eval_years, tx_cost_bps=tx_cost_bps)
         
-        pb_d = calc_nii_paths_vectorized(np.zeros(len(df)), df, t_names, YS_d, base_cost, deposit_beta, sYS_d, False)
-        po_d = calc_nii_paths_vectorized(opt_v_d / df['Book_Value'].values, df, t_names, YS_d, base_cost, deposit_beta, sYS_d, False)
+        pb_d = calc_nii_paths_vectorized(np.zeros(len(df)), df, t_names, YS_d, base_cost, deposit_beta, sYS_d, False, eval_years=eval_years, tx_cost_bps=tx_cost_bps)
+        po_d = calc_nii_paths_vectorized(opt_v_d / df['Book_Value'].values, df, t_names, YS_d, base_cost, deposit_beta, sYS_d, False, eval_years=eval_years, tx_cost_bps=tx_cost_bps)
         
         def cum_paths(p_dict): return {k: list(np.cumsum(v)) for k, v in p_dict.items()}
         pb_d_cum = cum_paths(pb_d); po_d_cum = cum_paths(po_d)
         
         fig_nii_d = go.Figure()
-        years = [1, 2, 3, 4, 5]
+        years = list(range(1, eval_years + 1))
         
         def get_fan(pdct): return np.min(np.array(list(pdct.values())), axis=0), np.max(np.array(list(pdct.values())), axis=0), np.mean(np.array(list(pdct.values())), axis=0)
         b_min, b_max, b_avg = get_fan(pb_d_cum); o_min, o_max, o_avg = get_fan(po_d_cum)
